@@ -1,0 +1,17 @@
+[Unit]
+Description=Chert bridge: routes the FaceTime line to the Hermes agent
+After=network-online.target hermes-agent.service
+Wants=network-online.target
+Requires=hermes-agent.service
+
+[Service]
+User=hermes
+WorkingDirectory=/home/hermes/Hermes
+Environment=HOME=/home/hermes
+# Same Chert version the project was tested with.
+ExecStart=/usr/bin/npx --yes @trychert/facetime@0.1.0-beta.21 dev --agent hermes-agent --env-file /home/hermes/Hermes/.env.local
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes sign-language agent (LiveKit worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hermes
+WorkingDirectory=/home/hermes/Hermes
+ExecStart=/home/hermes/Hermes/.venv/bin/python agent.py start
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Keys are read by agent.py from .env and .env.local in WorkingDirectory.
+
+[Install]
+WantedBy=multi-user.target

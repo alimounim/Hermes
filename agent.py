@@ -687,16 +687,19 @@ class CaptionBoard:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        if self._room is not None and self._track is not None:
+        # At hang-up the room is usually gone already; an unpublish then never
+        # gets an answer and the job process hangs until LiveKit kills it.
+        room = self._room
+        if room is not None and self._track is not None and room.isconnected():
             sid = getattr(self._track, "sid", None)
             if sid:
                 try:
-                    await self._room.local_participant.unpublish_track(sid)
+                    await asyncio.wait_for(room.local_participant.unpublish_track(sid), 2.0)
                 except Exception:  # noqa: BLE001
                     pass
         if self._source is not None:
             try:
-                await self._source.aclose()
+                await asyncio.wait_for(self._source.aclose(), 2.0)
             except Exception:  # noqa: BLE001
                 pass
             self._source = None
@@ -728,9 +731,14 @@ class HermesCallWorker:
         self._loop = asyncio.get_running_loop()
         self._last_remote_wh: Optional[tuple[int, int]] = None
 
+    def _close_stream(self, stream: rtc.VideoStream) -> None:
+        # VideoStream only has the async aclose(); run it without blocking callers.
+        task = self._loop.create_task(stream.aclose())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
     def close(self) -> None:
         if self._video_stream is not None:
-            self._video_stream.close()
+            self._close_stream(self._video_stream)
             self._video_stream = None
         for task in list(self._tasks):
             task.cancel()
@@ -762,7 +770,7 @@ class HermesCallWorker:
             if _pub_name(publication) == FACETIME_VIDEO:
                 logger.info("facetime-remote-video unsubscribed — clearing stream")
                 if self._video_stream is not None:
-                    self._video_stream.close()
+                    self._close_stream(self._video_stream)
                     self._video_stream = None
                 self._latest_bgr = None
 
@@ -798,7 +806,7 @@ class HermesCallWorker:
             getattr(publication, "muted", None),
         )
         if self._video_stream is not None:
-            self._video_stream.close()
+            self._close_stream(self._video_stream)
         if self._video_task is not None and not self._video_task.done():
             self._video_task.cancel()
         self._video_stream = rtc.VideoStream(track)
@@ -951,5 +959,8 @@ if __name__ == "__main__":
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             agent_name=AGENT_NAME,
+            # Each warm process loads MediaPipe + the sign model (~1 GB). Keep
+            # this low on a small server; one line only takes one call at a time.
+            num_idle_processes=int(os.getenv("HERMES_IDLE_PROCESSES", "1")),
         )
     )

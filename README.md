@@ -136,6 +136,8 @@ npx --yes --prefer-online @trychert/facetime@0.1.0-beta.21 dev --agent hermes-ag
 
 **What FaceTime call mode does today (one mode):** you sign → Hermes **speaks** English into the call. Hearing-person speech is transcribed and shown as **Reply** text on Hermes’ video board: 1920×1080 landscape by default, switching to 1080×1920 portrait when the caller's camera is portrait (iPhone). The board streams at a steady 15 fps; a slower stream shows up as a gray tile in FaceTime (Apple FaceTime has no agent caption API — watch Hermes’ video pane). Layout uses fractional safe margins + a centered YOU/REPLY stack that survives phone and Mac FaceTime cover-crop. There is no in-call mode picker UI; the spoken greeting is the how-to.
 
+To keep the line answering without your laptop, run both on a server: see [deploy/README.md](deploy/README.md).
+
 Trial note: Chert-managed LiveKit (`chert livekit`) is not provisioned on this trial — use your own LiveKit Cloud project.
 
 ## Troubleshooting
