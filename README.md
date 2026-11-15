@@ -152,6 +152,13 @@ To keep the line answering without your laptop, run both on a server: see [deplo
 
 Trial note: Chert-managed LiveKit (`chert livekit`) is not provisioned on this trial — use your own LiveKit Cloud project.
 
+## Future work
+
+- **Call a friend who isn't in the room.** Today a FaceTime call is one-to-one with Hermes, so the hearing person has to be next to the signer. The plan is a two-room relay: the signer stays on FaceTime with Hermes, and the other person joins a separate LiveKit room from a link (for example `signtovoice.us/call`) in any browser. Hermes joins both rooms, speaks the signed sentences into the friend's room, and shows the friend's speech under REPLY on the signer's FaceTime board. Keeping the rooms separate respects Chert's rule that only one participant in the FaceTime room may publish audio. (Simply adding Hermes to a Group FaceTime is untested and likely to break that rule.)
+- **Bigger vocabulary and fingerspelling**, for names and medications.
+- **Continuous signing:** a sequence model over landmarks instead of one sign at a time.
+- **Testing with Deaf signers**, to collect their own recordings and decide what Hermes should and shouldn't do.
+
 ## Troubleshooting
 
 - **Camera missing:** `Could not open camera index 0` — close other apps using the webcam, or change `CAMERA_INDEX` in `config.py`.
