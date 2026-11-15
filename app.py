@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import signal
+import sys
 import threading
 from typing import List, Optional, Tuple
 
@@ -14,6 +16,34 @@ from recognizer import SignRecognizer
 from sources import VideoFileSource, WebcamSource
 from translate import translate
 from voice import speak, transcribe
+
+# Set by SIGINT/SIGTERM so the loop can exit without a raw "terminated" death.
+_stop = False
+
+
+def _request_stop(signum, _frame) -> None:
+    global _stop
+    _stop = True
+    name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    print(f"\n[app] received {name} — quitting…")
+
+
+def _window_closed(name: str = "Hermes") -> bool:
+    """True if the HighGUI window was closed (e.g. macOS red traffic-light)."""
+    try:
+        # -1 means the window does not exist / was destroyed.
+        prop = cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE)
+        return prop < 1
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _safe_destroy_windows() -> None:
+    try:
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _draw_panel(
@@ -78,6 +108,11 @@ def _speak_async(text: str, enabled: bool) -> None:
 
 
 def run(video: Optional[str] = None, no_voice: bool = False) -> None:
+    global _stop
+    _stop = False
+    signal.signal(signal.SIGINT, _request_stop)
+    signal.signal(signal.SIGTERM, _request_stop)
+
     if video:
         source = VideoFileSource(video, loop=True)
     else:
@@ -92,11 +127,12 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
 
     print("Hermes in-person mode")
     print("Q quit | R record reply (5s) | C clear captions")
+    print("(Prefer Q over the window red button on macOS.)")
     if no_voice:
         print("Voice disabled (--no-voice)")
 
     try:
-        while True:
+        while not _stop:
             ok, frame = source.read()
             if not ok or frame is None:
                 print("No more frames.")
@@ -123,6 +159,9 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
             cv2.imshow("Hermes", frame)
 
             key = cv2.waitKey(1) & 0xFF
+            if _window_closed("Hermes"):
+                print("[app] window closed — quitting…")
+                break
             if key in (ord("q"), ord("Q")):
                 break
             if key in (ord("c"), ord("C")):
@@ -134,7 +173,6 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
             if key in (ord("r"), ord("R")):
                 try:
                     print("[app] recording reply…")
-                    # Pause briefly so the OpenCV window stays responsive messaging
                     reply = transcribe(seconds=config.RECORD_SECONDS)
                     reply_caption = reply
                     if reply:
@@ -143,9 +181,16 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[app] transcription failed: {exc}")
     finally:
-        recognizer.close()
-        source.close()
-        cv2.destroyAllWindows()
+        try:
+            recognizer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            source.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _safe_destroy_windows()
+        print("[app] stopped.")
 
 
 def main() -> None:
@@ -162,7 +207,14 @@ def main() -> None:
         help="Skip ElevenLabs TTS playback",
     )
     args = parser.parse_args()
-    run(video=args.video, no_voice=args.no_voice)
+    try:
+        run(video=args.video, no_voice=args.no_voice)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"[app] fatal: {exc}", file=sys.stderr)
+        _safe_destroy_windows()
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
