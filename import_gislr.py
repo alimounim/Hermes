@@ -1,8 +1,9 @@
 """Import signs from Google's Isolated Sign Language Recognition dataset (Kaggle "asl-signs").
 
 The dataset is 250 ASL signs recorded by 21 Deaf signers, already converted to
-MediaPipe landmarks. This script downloads ONLY the signs Hermes needs (not the
-whole 40 GB), converts each clip into the same 15-frame window features that
+MediaPipe landmarks. This script prefers ONE bulk competition zip download
+(avoids hundreds of per-parquet API calls that trigger 429 rate limits), then
+converts only the signs Hermes needs into the same 15-frame window features that
 collect.py produces, and saves them into data/samples/<LABEL>/ so train.py works
 unchanged. Your own recordings in data/samples stay and get trained together.
 
@@ -18,9 +19,9 @@ Setup (once):
      (same Python that will run this script: python -m pip install ...)
 
 Run (from ~/Hermes):
-  python import_gislr.py                           # default: 60 clips/sign, 2 workers
-  python import_gislr.py --workers 1 --per-sign 30 # gentler on Kaggle rate limits
-  python import_gislr.py --per-sign 100            # more data, slower download
+  python import_gislr.py                           # bulk zip + 60 clips/sign, 1 worker
+  python import_gislr.py --workers 1 --per-sign 30 # smaller first import
+  python import_gislr.py --per-file                # legacy per-parquet API (rate-limit prone)
   python import_gislr.py --list                    # just show which signs exist
 """
 
@@ -43,6 +44,7 @@ from landmarks import normalize_hand, window_features
 
 COMPETITION = "asl-signs"
 CACHE = config.DATA_DIR / "gislr_cache"
+BULK_MARKER = CACHE / ".bulk_download_done"
 AUTH_HELP = (
     "Kaggle login failed.\n"
     "Save your API token as the file ~/.kaggle/access_token\n"
@@ -164,47 +166,162 @@ def _is_retryable(exc: BaseException) -> bool:
     return any(m in msg or m in name for m in markers)
 
 
-def _download(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path:
-    """Download one competition file into the cache (skips if already there).
+def _resolve_cached(remote: str) -> Path | None:
+    """Find a competition-relative path already present under the cache."""
+    candidates = [
+        CACHE / remote,
+        CACHE / COMPETITION / remote,
+        CACHE / Path(remote).name,
+    ]
+    # After bulk unzip, train.csv sometimes lands at cache root while parquets
+    # keep their train_landmark_files/... layout (or vice versa).
+    for cand in candidates:
+        if cand.exists() and cand.stat().st_size > 0:
+            return cand
+    matches = list(CACHE.rglob(Path(remote).name))
+    for cand in matches:
+        if cand.is_file() and cand.stat().st_size > 0:
+            # Prefer a path that ends with the remote relative path.
+            try:
+                if cand.relative_to(CACHE).as_posix().endswith(remote):
+                    return cand
+            except ValueError:
+                pass
+    return matches[0] if matches else None
 
-    Retries with exponential backoff on 429 / DNS / connection errors. Downloads
-    are serialized across threads so --workers mostly parallelizes parquet→npy
-    conversion of already-cached clips, not hammering Kaggle.
-    """
-    local = CACHE / remote
-    if local.exists() and local.stat().st_size > 0:
-        return local
-    local.parent.mkdir(parents=True, exist_ok=True)
+
+def _unzip_if_needed(path: Path, remote: str) -> Path | None:
+    """If Kaggle wrapped the file in a .zip, extract and return the payload path."""
+    zipped = path if path.suffix == ".zip" else path.parent / (path.name + ".zip")
+    # competition_download_file may write basename.zip into path= parent.
+    basename_zip = path.parent / (Path(remote).name + ".zip")
+    for zpath in (zipped, basename_zip):
+        if not zpath.exists():
+            continue
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(zpath.parent)
+        zpath.unlink(missing_ok=True)
+        found = _resolve_cached(remote)
+        if found:
+            return found
+    return _resolve_cached(remote)
+
+
+def _download_file(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path:
+    """Download one competition file into the cache (skips if already there)."""
+    found = _resolve_cached(remote)
+    if found:
+        return found
+    dest_parent = (CACHE / remote).parent
+    dest_parent.mkdir(parents=True, exist_ok=True)
     last_exc: BaseException | None = None
     for attempt in range(attempts):
         try:
             with _DOWNLOAD_LOCK:
-                # Another worker may have finished while we waited for the lock.
-                if local.exists() and local.stat().st_size > 0:
-                    return local
+                found = _resolve_cached(remote)
+                if found:
+                    return found
                 api.competition_download_file(
-                    COMPETITION, remote, path=str(local.parent), quiet=True
+                    COMPETITION,
+                    remote,
+                    path=str(dest_parent),
+                    quiet=True,
+                    unzip=True,
                 )
-                time.sleep(0.35)  # courtesy gap between API calls
-            zipped = local.parent / (local.name + ".zip")
-            if zipped.exists():
-                with zipfile.ZipFile(zipped) as z:
-                    z.extractall(local.parent)
-                zipped.unlink()
-            if not local.exists():
-                raise FileNotFoundError(remote)
-            return local
+                time.sleep(0.35)
+            found = _unzip_if_needed(CACHE / remote, remote)
+            if found:
+                return found
+            raise FileNotFoundError(
+                f"downloaded '{remote}' but file not found under {CACHE}"
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt + 1 >= attempts or not _is_retryable(exc):
                 raise
             delay = min(60.0, (2**attempt) + random.random())
             print(
-                f"  retry {attempt + 1}/{attempts} {remote}: {exc} "
-                f"(sleep {delay:.1f}s)"
+                f"  retry {attempt + 1}/{attempts} {remote}: "
+                f"{type(exc).__name__}: {exc} (sleep {delay:.1f}s)"
             )
             time.sleep(delay)
     raise RuntimeError(f"download failed: {remote}") from last_exc
+
+
+def _bulk_ready() -> bool:
+    if BULK_MARKER.exists():
+        return True
+    # Heuristic: landmark tree already present from a prior unzip.
+    return (CACHE / "train_landmark_files").is_dir() or (
+        CACHE / COMPETITION / "train_landmark_files"
+    ).is_dir()
+
+
+def _download_bulk(api, attempts: int = _DOWNLOAD_ATTEMPTS) -> None:
+    """One competition zip via competition_download_files (avoids per-file 429s).
+
+    Warning: the asl-signs archive is large (~tens of GB). Prefer this over
+    thousands of per-parquet API calls when rate-limited.
+    """
+    if _bulk_ready():
+        print(f"Using cached competition data under {CACHE}")
+        BULK_MARKER.touch()
+        return
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+    print(
+        f"Downloading full '{COMPETITION}' competition zip into {CACHE} "
+        "(large; one API download — avoids 429 from per-parquet calls) ..."
+    )
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            with _DOWNLOAD_LOCK:
+                api.competition_download_files(
+                    COMPETITION,
+                    path=str(CACHE),
+                    force=False,
+                    quiet=False,
+                    unzip=True,
+                )
+            # Some Kaggle versions leave the zip behind even with unzip=True.
+            for zpath in CACHE.glob("*.zip"):
+                print(f"  extracting {zpath.name} ...")
+                with zipfile.ZipFile(zpath) as z:
+                    z.extractall(CACHE)
+                zpath.unlink(missing_ok=True)
+            if not _bulk_ready() and not (CACHE / "train.csv").exists():
+                raise FileNotFoundError(
+                    f"bulk download finished but train.csv / landmark files "
+                    f"not found under {CACHE}"
+                )
+            BULK_MARKER.touch()
+            print("Bulk download complete.")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt + 1 >= attempts or not _is_retryable(exc):
+                raise
+            delay = min(90.0, (2**attempt) + random.random())
+            print(
+                f"  bulk retry {attempt + 1}/{attempts}: "
+                f"{type(exc).__name__}: {exc} (sleep {delay:.1f}s)"
+            )
+            time.sleep(delay)
+    raise RuntimeError("bulk competition download failed") from last_exc
+
+
+def _download(api, remote: str, *, per_file: bool) -> Path:
+    """Resolve a competition file from bulk cache, else per-file download."""
+    found = _resolve_cached(remote)
+    if found:
+        return found
+    if not per_file:
+        raise FileNotFoundError(
+            f"missing '{remote}' under {CACHE} after bulk download "
+            f"(tried cache roots and rglob by basename)"
+        )
+    return _download_file(api, remote)
 
 
 def _frame_vectors(parquet: Path) -> list[np.ndarray]:
@@ -252,8 +369,8 @@ def _mirror(window: list[np.ndarray]) -> list[np.ndarray]:
     return out
 
 
-def _process(api, row) -> tuple[str, list[np.ndarray]]:
-    path = _download(api, row.path)
+def _process(api, row, *, per_file: bool) -> tuple[str, list[np.ndarray]]:
+    path = _download(api, row.path, per_file=per_file)
     feats = []
     for w in _windows(_frame_vectors(path)):
         feats.append(window_features(w))
@@ -270,14 +387,24 @@ def _save_feats(counts: dict[str, int], label: str, feats: list[np.ndarray]) -> 
         counts[label] = n + 1
 
 
+def _format_skip(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--per-sign", type=int, default=60, help="clips per sign to download")
     ap.add_argument(
         "--workers",
         type=int,
-        default=2,
-        help="parallel clip workers (default 2; use 1 if you hit 429 rate limits)",
+        default=1,
+        help="parallel clip workers (default 1; keep low to avoid 429s)",
+    )
+    ap.add_argument(
+        "--per-file",
+        action="store_true",
+        help="download each parquet via the API (rate-limit prone); "
+        "default is one bulk competition zip",
     )
     ap.add_argument("--list", action="store_true", help="list available signs and exit")
     args = ap.parse_args()
@@ -285,8 +412,18 @@ def main() -> None:
         raise SystemExit("--workers must be >= 1")
 
     api = _api()
-    print("Downloading train.csv ...")
-    meta = pd.read_csv(_download(api, "train.csv"))
+
+    if args.per_file:
+        print("Downloading train.csv (per-file mode) ...")
+        meta = pd.read_csv(_download_file(api, "train.csv"))
+    else:
+        _download_bulk(api)
+        train_csv = _resolve_cached("train.csv")
+        if train_csv is None:
+            print("train.csv missing after bulk download; fetching just that file ...")
+            train_csv = _download_file(api, "train.csv")
+        print(f"Reading {train_csv} ...")
+        meta = pd.read_csv(train_csv)
 
     available = set(meta["sign"].unique())
     if args.list:
@@ -308,13 +445,12 @@ def main() -> None:
         )
         picks.extend(rows.head(args.per_sign).itertuples())
 
+    mode = "per-file API" if args.per_file else "bulk zip cache"
     print(
-        f"Downloading and converting {len(picks)} clips for "
+        f"Converting {len(picks)} clips for "
         f"{len({p.sign for p in picks})} signs "
-        f"(workers={args.workers}, downloads serialized) ..."
+        f"(workers={args.workers}, mode={mode}) ..."
     )
-    # Note: competition_download_files() pulls the entire ~40 GB competition
-    # archive, so we keep per-file download + retry instead of a bulk zip.
     counts: dict[str, int] = {}
     done = 0
     skipped = 0
@@ -326,16 +462,18 @@ def main() -> None:
         for row in picks:
             done += 1
             try:
-                label, feats = _process(api, row)
+                label, feats = _process(api, row, per_file=args.per_file)
                 _handle_result(label, feats)
             except Exception as exc:  # noqa: BLE001
                 skipped += 1
-                print(f"  skipped one clip: {exc}")
+                print(f"  skipped one clip: {_format_skip(exc)}")
             if done % 25 == 0 or done == len(picks):
                 print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
     else:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = [pool.submit(_process, api, r) for r in picks]
+            futures = [
+                pool.submit(_process, api, r, per_file=args.per_file) for r in picks
+            ]
             for fut in as_completed(futures):
                 done += 1
                 try:
@@ -343,7 +481,7 @@ def main() -> None:
                     _handle_result(label, feats)
                 except Exception as exc:  # noqa: BLE001
                     skipped += 1
-                    print(f"  skipped one clip: {exc}")
+                    print(f"  skipped one clip: {_format_skip(exc)}")
                 if done % 25 == 0 or done == len(picks):
                     print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
 
@@ -358,9 +496,12 @@ def main() -> None:
 
     if total == 0:
         print(
-            "\nERROR: imported 0 samples. Likely Kaggle 429 rate limit or network/DNS.\n"
-            "Wait a few minutes, then retry gently:\n"
-            "  python import_gislr.py --workers 1 --per-sign 30",
+            "\nERROR: imported 0 samples. Likely Kaggle 429 / network, or bulk zip "
+            "missing landmark files.\n"
+            "Wait a few minutes, then:\n"
+            "  python import_gislr.py --workers 1 --per-sign 30\n"
+            "If bulk zip is too large, free disk space under data/gislr_cache/ and retry.\n"
+            "Avoid --per-file unless you must (it hammers the API).",
             file=sys.stderr,
         )
         raise SystemExit(1)
