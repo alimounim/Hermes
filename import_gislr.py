@@ -138,8 +138,21 @@ def _api():
     return api
 
 
+def _is_not_found(exc: BaseException) -> bool:
+    """True for HTTP 404 / missing competition file (do not retry)."""
+    msg = str(exc).lower()
+    return (
+        "404" in msg
+        or "not found" in msg
+        or "does not exist" in msg
+        or "no such file" in msg
+    )
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """True for rate limits / transient network failures worth backing off on."""
+    if _is_not_found(exc):
+        return False
     msg = str(exc).lower()
     name = type(exc).__name__.lower()
     markers = (
@@ -237,6 +250,14 @@ def _download_file(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path
             )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            if _is_not_found(exc):
+                raise FileNotFoundError(
+                    f"404 for '{remote}' via competition_download_file. "
+                    "Nested train_landmark_files/... paths are not served "
+                    "per-file on Kaggle. Use the default bulk zip instead:\n"
+                    "  python import_gislr.py --workers 1 --per-sign 30\n"
+                    "(do not pass --per-file)"
+                ) from exc
             if attempt + 1 >= attempts or not _is_retryable(exc):
                 raise
             delay = min(60.0, (2**attempt) + random.random())
@@ -414,9 +435,14 @@ def main() -> None:
     api = _api()
 
     if args.per_file:
+        print(
+            "WARNING: --per-file mode uses competition_download_file per parquet; "
+            "nested paths often 404. Prefer default bulk zip (omit --per-file)."
+        )
         print("Downloading train.csv (per-file mode) ...")
         meta = pd.read_csv(_download_file(api, "train.csv"))
     else:
+        print("Download mode: bulk competition zip (competition_download_files)")
         _download_bulk(api)
         train_csv = _resolve_cached("train.csv")
         if train_csv is None:
