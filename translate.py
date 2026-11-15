@@ -1,10 +1,11 @@
-"""Grok (xAI) translation: ASL gloss tokens → one natural English sentence."""
+"""Gemini translation: ASL gloss tokens → one natural English sentence."""
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import Sequence
 
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 import config
 
@@ -17,13 +18,14 @@ SYSTEM_PROMPT = (
 )
 
 
-def _client() -> OpenAI:
-    if not config.XAI_API_KEY:
+def _api_key() -> str:
+    key = config.GEMINI_API_KEY
+    if not key:
         raise RuntimeError(
-            "XAI_API_KEY is missing. Add it to your .env file "
-            "(see .env.example)."
+            "GEMINI_API_KEY (or GOOGLE_API_KEY) is missing. "
+            "Add it to your .env file (see .env.example)."
         )
-    return OpenAI(api_key=config.XAI_API_KEY, base_url=config.XAI_BASE_URL)
+    return key
 
 
 def tokens_to_fallback(tokens: Sequence[str]) -> str:
@@ -47,41 +49,33 @@ def translate(
 
     fallback = tokens_to_fallback(clean)
     try:
-        client = _client()
+        api_key = _api_key()
     except RuntimeError as exc:
         print(f"[translate] {exc} — using token fallback.")
         return fallback
 
-    messages: List[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    parts: list[str] = []
     if conversation:
-        ctx_lines = []
-        for role, text in conversation[-6:]:
-            ctx_lines.append(f"{role}: {text}")
-        messages.append(
-            {
-                "role": "user",
-                "content": "Recent conversation:\n" + "\n".join(ctx_lines),
-            }
-        )
-    messages.append(
-        {
-            "role": "user",
-            "content": "ASL gloss tokens: " + " ".join(clean),
-        }
-    )
+        ctx_lines = [f"{role}: {text}" for role, text in conversation[-6:]]
+        parts.append("Recent conversation:\n" + "\n".join(ctx_lines))
+    parts.append("ASL gloss tokens: " + " ".join(clean))
+    user_prompt = "\n\n".join(parts)
 
     try:
-        resp = client.chat.completions.create(
-            model=config.GROK_MODEL,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=80,
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.2,
+                max_output_tokens=80,
+            ),
         )
-        text = (resp.choices[0].message.content or "").strip()
-        # Keep a single sentence if the model rambles.
+        text = (resp.text or "").strip()
         if "\n" in text:
             text = text.splitlines()[0].strip()
         return text or fallback
     except Exception as exc:  # noqa: BLE001
-        print(f"[translate] Grok API failed ({exc}) — using token fallback.")
+        print(f"[translate] Gemini API failed ({exc}) — using token fallback.")
         return fallback

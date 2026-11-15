@@ -1,6 +1,6 @@
 # Hermes
 
-Sign-language translator for HackUTA 2026. Hermes watches a signer through a camera, recognizes signs, turns them into natural English with Grok, and speaks them with ElevenLabs. When a hearing person replies, Hermes transcribes their speech and shows captions.
+Sign-language translator for HackUTA 2026. Hermes watches a signer through a camera, recognizes signs, turns them into natural English with Google Gemini, and speaks them with ElevenLabs. When a hearing person replies, Hermes transcribes their speech and shows captions.
 
 **Phase 1 (this PR):** core engine + in-person mode. Call mode (`agent.py`) comes in Phase 2.
 
@@ -18,12 +18,14 @@ cp .env.example .env
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `XAI_API_KEY` | Translation | xAI / Grok key |
-| `GROK_MODEL` | Translation | Default `grok-2-latest` |
+| `GEMINI_API_KEY` | Translation | Google AI Studio / Gemini key (`GOOGLE_API_KEY` also accepted) |
+| `GEMINI_MODEL` | Translation | Default `gemini-2.0-flash` |
 | `ELEVENLABS_API_KEY` | Speak + reply captions | ElevenLabs key |
-| `ELEVENLABS_VOICE_ID` | Speak | Default Rachel-like voice id in `.env.example` |
+| `ELEVENLABS_VOICE_ID` | Speak | Default voice id in `.env.example` |
 
 The MediaPipe HandLandmarker `.task` model downloads automatically into `models/` on first run.
+
+> Phase 1 no longer uses xAI / Grok. You can remove any old `XAI_API_KEY` from `.env`.
 
 ## Collect training data
 
@@ -51,7 +53,7 @@ python app.py
 
 - Live camera with landmarks, current sign + confidence, collected tokens
 - Caption panel: `Signer: …` / `Reply: …`
-- When a sentence finishes (1.5s idle after signs): translate with Grok, speak with ElevenLabs
+- When a sentence finishes (1.5s idle after signs): translate with Gemini, speak with ElevenLabs
 - **R** — record the hearing person’s reply for 5 seconds and caption it
 - **C** — clear captions
 - **Q** — quit
@@ -77,7 +79,7 @@ Configured in `config.py`: `_none`, HELLO, THANK-YOU, PLEASE, YES, NO, I, NEED, 
 | `collect.py` | Record training samples |
 | `train.py` | Train scikit-learn MLP |
 | `recognizer.py` | Smoothed signs → sentences |
-| `translate.py` | Grok gloss → English |
+| `translate.py` | Gemini gloss → English |
 | `voice.py` | ElevenLabs TTS / STT |
 | `app.py` | In-person mode UI |
 
