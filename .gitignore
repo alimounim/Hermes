@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Runtime / generated
+data/
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env.local
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.mp3
+*.wav

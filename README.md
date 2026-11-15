@@ -1,1 +1,88 @@
 # Hermes
+
+Sign-language translator for HackUTA 2026. Hermes watches a signer through a camera, recognizes signs, turns them into natural English with Grok, and speaks them with ElevenLabs. When a hearing person replies, Hermes transcribes their speech and shows captions.
+
+**Phase 1 (this PR):** core engine + in-person mode. Call mode (`agent.py`) comes in Phase 2.
+
+## Setup
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env and add your keys
+```
+
+### Environment variables
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `XAI_API_KEY` | Translation | xAI / Grok key |
+| `GROK_MODEL` | Translation | Default `grok-2-latest` |
+| `ELEVENLABS_API_KEY` | Speak + reply captions | ElevenLabs key |
+| `ELEVENLABS_VOICE_ID` | Speak | Default Rachel-like voice id in `.env.example` |
+
+The MediaPipe HandLandmarker `.task` model downloads automatically into `models/` on first run.
+
+## Collect training data
+
+Stand in front of the webcam. For each sign, hold the pose/motion and press **SPACE** to save a sample. Press **N** for the next sign, **Q** to quit. Aim for ~30 samples per sign (including `_none` = hands resting).
+
+```bash
+python collect.py
+```
+
+Samples are saved under `data/samples/<SIGN>/*.npy`.
+
+## Train the classifier
+
+```bash
+python train.py
+```
+
+Prints a classification report and writes `models/sign_clf.joblib`.
+
+## Run in-person mode
+
+```bash
+python app.py
+```
+
+- Live camera with landmarks, current sign + confidence, collected tokens
+- Caption panel: `Signer: …` / `Reply: …`
+- When a sentence finishes (1.5s idle after signs): translate with Grok, speak with ElevenLabs
+- **R** — record the hearing person’s reply for 5 seconds and caption it
+- **C** — clear captions
+- **Q** — quit
+
+Options:
+
+```bash
+python app.py --no-voice          # skip TTS
+python app.py --video demo.mp4    # backup demo from a recorded clip
+```
+
+## Vocabulary
+
+Configured in `config.py`: `_none`, HELLO, THANK-YOU, PLEASE, YES, NO, I, NEED, MEDICINE, PAIN, HEAD, HELP, WHERE, BATHROOM, PHARMACY.
+
+## Project layout
+
+| File | Role |
+|---|---|
+| `config.py` | Vocab, thresholds, paths, env keys |
+| `landmarks.py` | MediaPipe Tasks HandLandmarker + features |
+| `sources.py` | Webcam / video file frames |
+| `collect.py` | Record training samples |
+| `train.py` | Train scikit-learn MLP |
+| `recognizer.py` | Smoothed signs → sentences |
+| `translate.py` | Grok gloss → English |
+| `voice.py` | ElevenLabs TTS / STT |
+| `app.py` | In-person mode UI |
+
+## Troubleshooting
+
+- **Camera missing:** `Could not open camera index 0` — close other apps using the webcam, or change `CAMERA_INDEX` in `config.py`.
+- **No classifier:** run `collect.py` then `train.py` before `app.py`.
+- **Missing API keys:** Hermes prints a clear error and falls back (token join for translation; skips speak/transcribe if ElevenLabs is unset).
