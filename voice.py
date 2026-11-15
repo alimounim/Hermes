@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import re
 import tempfile
+import threading
 import wave
 from pathlib import Path
 from typing import Optional
@@ -15,6 +17,10 @@ import config
 
 TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+
+# sounddevice's play()/rec() share one global stream: starting one while the
+# other runs aborts it (PortAudio err -50). Serialize all audio I/O.
+AUDIO_LOCK = threading.Lock()
 
 
 def _require_key() -> str:
@@ -49,12 +55,17 @@ def speak(text: str, voice_id: Optional[str] = None) -> None:
             f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:300]}"
         )
 
+    with AUDIO_LOCK:
+        _play(resp.content)
+
+
+def _play(audio: bytes) -> None:
     # Prefer sounddevice + soundfile; fall back to writing a temp mp3 + afplay/ffplay.
     try:
         import soundfile as sf
         import sounddevice as sd
 
-        data, sr = sf.read(io.BytesIO(resp.content))
+        data, sr = sf.read(io.BytesIO(audio))
         sd.play(data, sr)
         sd.wait()
         return
@@ -62,7 +73,7 @@ def speak(text: str, voice_id: Optional[str] = None) -> None:
         pass
 
     tmp = Path(tempfile.gettempdir()) / "hermes_tts.mp3"
-    tmp.write_bytes(resp.content)
+    tmp.write_bytes(audio)
     # Best-effort local playback
     import shutil
     import subprocess
@@ -86,14 +97,15 @@ def record_microphone(seconds: float = config.RECORD_SECONDS) -> np.ndarray:
             "sounddevice is required to record the hearing person's reply. "
             "Install requirements.txt."
         ) from exc
-    print(f"[voice] Recording {seconds:.0f}s ...")
-    audio = sd.rec(
-        int(seconds * config.SAMPLE_RATE),
-        samplerate=config.SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-    )
-    sd.wait()
+    with AUDIO_LOCK:  # waits for any speech still playing
+        print(f"[voice] Recording {seconds:.0f}s ...")
+        audio = sd.rec(
+            int(seconds * config.SAMPLE_RATE),
+            samplerate=config.SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+        )
+        sd.wait()
     return audio.reshape(-1)
 
 
@@ -121,11 +133,16 @@ def transcribe(audio: Optional[np.ndarray] = None, seconds: float = config.RECOR
     headers = {"xi-api-key": api_key}
     files = {"file": ("reply.wav", wav, "audio/wav")}
     data = {"model_id": config.ELEVENLABS_STT_MODEL}
+    if config.ELEVENLABS_STT_LANGUAGE:
+        data["language_code"] = config.ELEVENLABS_STT_LANGUAGE
     resp = requests.post(STT_URL, headers=headers, files=files, data=data, timeout=60)
     if resp.status_code != 200:
         raise RuntimeError(
             f"ElevenLabs STT failed ({resp.status_code}): {resp.text[:300]}"
         )
     body = resp.json()
-    text = body.get("text") or body.get("transcript") or ""
-    return str(text).strip()
+    text = str(body.get("text") or body.get("transcript") or "")
+    # Drop sound-event tags such as "[pause]" or "(background noise)" so
+    # silence does not show up as a reply caption.
+    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", text)
+    return " ".join(text.split())

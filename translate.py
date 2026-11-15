@@ -29,7 +29,9 @@ Rules:
 - Hospital / pharmacy / travel context is OK for small connecting words only.
 - Do NOT invent people, places, times, symptoms, or objects that are not suggested by the tokens or recent conversation.
 - If tokens are unclear, stay conservative: still make a grammatical sentence, but do not add new facts.
-- If recent conversation is provided, fit the answer to that dialogue when the gloss is a reply.
+- Translate ONLY the current gloss tokens. Recent conversation is context, not content: never repeat or merge in things the signer said earlier, and do not add words like "still" or "also" that refer back to earlier turns.
+- Use the conversation only to resolve a short reply to the hearing person's last question (e.g. reply "Do you need water?" + gloss YES → "Yes, I do.").
+- Repeated tokens (PLEASE PLEASE) mean the sign was emphasized or detected twice: say it once.
 
 Examples (gloss → English):
 - WHERE MEDICINE PAIN → Where is the pain medicine?
@@ -97,8 +99,11 @@ def translate(
     parts: list[str] = []
     if conversation:
         ctx_lines = [f"{role}: {text}" for role, text in conversation[-6:]]
-        parts.append("Recent conversation:\n" + "\n".join(ctx_lines))
-    parts.append("ASL gloss tokens: " + " ".join(clean))
+        parts.append(
+            "Recent conversation (context only — do not repeat it):\n"
+            + "\n".join(ctx_lines)
+        )
+    parts.append("Current ASL gloss tokens to translate: " + " ".join(clean))
     parts.append("English sentence:")
     user_prompt = "\n\n".join(parts)
 
