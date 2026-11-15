@@ -16,7 +16,12 @@ The input is ASL gloss: a short sequence of recognized sign tokens (possibly noi
 Known gloss vocabulary (ignore unknowns conservatively):
 _none (ignore), HELLO, THANK-YOU, PLEASE, YES, NO, WHERE, HEAD, PAIN, SICK,
 BATHROOM, WATER, HUNGRY, THIRSTY, NEED, WAIT, FINISH, BYE, FINE, YOU, MY,
-HOME, HELP, TIME, NOW, I, MEDICINE, PHARMACY.
+HOME, HELP, TIME, NOW, I, MEDICINE, PHARMACY,
+DRINK, FOOD, SLEEP, SLEEPY, HOT, BATH, BED, BAD, BETTER, HAPPY, SAD, CRY,
+WHO, WHY, GO, STAY, GIVE, HAVE, LOOK, LISTEN, FIND, LATER, TOMORROW,
+YESTERDAY, MORNING, NIGHT, NOT, ANOTHER, MOM, DAD, PERSON.
+Note: NOT negates the sign next to it (NOT HUNGRY → "I'm not hungry").
+ANOTHER means "another / one more". BAD + a body word usually means it feels bad.
 Note: PAIN means "it hurts / owie", BATHROOM covers toilet/restroom, NEED covers
 "have to / must". Prefer hospital/pharmacy phrasing when MEDICINE, PHARMACY,
 PAIN, SICK, HEAD, HELP, WATER, THIRSTY, or HUNGRY appear.
@@ -32,6 +37,8 @@ Rules:
 - Translate ONLY the current gloss tokens. Recent conversation is context, not content: never repeat or merge in things the signer said earlier, and do not add words like "still" or "also" that refer back to earlier turns.
 - Use the conversation only to resolve a short reply to the hearing person's last question (e.g. reply "Do you need water?" + gloss YES → "Yes, I do.").
 - Repeated tokens (PLEASE PLEASE) mean the sign was emphasized or detected twice: say it once.
+- Every token must be reflected in the sentence. Never drop a token because it is awkward: TIME HELLO FINISH YES → "Hello, yes, is it time to finish?", not "Hello, is it time now?".
+- The signer may put words in ASL order (topic first, question word last: BATHROOM WHERE → "Where is the bathroom?"). Reorder freely into natural English.
 
 Examples (gloss → English):
 - WHERE MEDICINE PAIN → Where is the pain medicine?

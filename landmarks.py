@@ -176,3 +176,121 @@ def draw_landmarks(frame_bgr: np.ndarray, result) -> None:
             cv2.line(frame_bgr, pts[start], pts[end], (0, 200, 120), 2)
         for p in pts:
             cv2.circle(frame_bgr, p, 3, (0, 255, 255), -1)
+
+
+def ensure_model(path: Path, url: str) -> Path:
+    """Download a MediaPipe .task model into models/ if missing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    print(f"Downloading {path.name} ...")
+    try:
+        urllib.request.urlretrieve(url, path)
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"Failed to download {url}\n{exc}") from exc
+    return path
+
+
+class BodyHandTracker:
+    """Hands + upper body per frame, in the same layout as the GISLR dataset.
+
+    process() returns (left_hand, right_hand, pose): arrays of shape (21, 3),
+    (21, 3) and (7, 2) in image-normalised coordinates, filled with NaN when
+    that part was not detected. A hand is "left" when it sits nearer the body's
+    left wrist — the dataset's convention — rather than trusting the hand
+    model's own left/right guess, which flips with mirrored cameras.
+    """
+
+    def __init__(self) -> None:
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        self._mp = mp
+        hand_opts = mp_vision.HandLandmarkerOptions(
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(ensure_hand_model(config.HAND_LANDMARKER_MODEL))
+            ),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        pose_opts = mp_vision.PoseLandmarkerOptions(
+            base_options=mp_python.BaseOptions(
+                model_asset_path=str(
+                    ensure_model(config.POSE_LANDMARKER_MODEL, config.POSE_LANDMARKER_URL)
+                )
+            ),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_poses=1,
+        )
+        self._hands = mp_vision.HandLandmarker.create_from_options(hand_opts)
+        self._pose = mp_vision.PoseLandmarker.create_from_options(pose_opts)
+        self._timestamp_ms = 0
+        self.last_hand_result = None
+
+    def process(self, frame_bgr: np.ndarray, timestamp_ms: Optional[int] = None):
+        import cv2
+
+        mp = self._mp
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        # MediaPipe needs strictly increasing timestamps.
+        ts = self._timestamp_ms + 33 if timestamp_ms is None else timestamp_ms
+        self._timestamp_ms = max(self._timestamp_ms + 1, int(ts))
+        hands = self._hands.detect_for_video(image, self._timestamp_ms)
+        body = self._pose.detect_for_video(image, self._timestamp_ms)
+        self.last_hand_result = hands
+
+        pose = np.full((len(config.POSE_KEEP), 2), np.nan, dtype=np.float32)
+        if body.pose_landmarks:
+            lms = body.pose_landmarks[0]
+            pose = np.array(
+                [[lms[i].x, lms[i].y] for i in config.POSE_KEEP], dtype=np.float32
+            )
+
+        found = [
+            np.array([[lm.x, lm.y, lm.z] for lm in hand], dtype=np.float32)
+            for hand in (hands.hand_landmarks or [])
+        ]
+        labels = [
+            (cats[0].category_name if cats else "") for cats in (hands.handedness or [])
+        ]
+        left, right = assign_hands(found, labels, pose)
+        return left, right, pose
+
+    def close(self) -> None:
+        self._hands.close()
+        self._pose.close()
+
+
+def assign_hands(found, labels, pose):
+    """Decide which detected hand is the body's left / right. Returns (left, right)."""
+    nan_hand = np.full((config.LANDMARKS_PER_HAND, 3), np.nan, dtype=np.float32)
+    left, right = nan_hand, nan_hand.copy()
+    if not found:
+        return left, right
+    lw, rw = pose[5], pose[6]  # body's left / right wrist in config.POSE_KEEP order
+    if np.isfinite(lw).all() and np.isfinite(rw).all():
+        if len(found) == 1:
+            w = found[0][0, :2]
+            if np.linalg.norm(w - lw) <= np.linalg.norm(w - rw):
+                left = found[0]
+            else:
+                right = found[0]
+        else:
+            a, b = found[0][0, :2], found[1][0, :2]
+            straight = np.linalg.norm(a - lw) + np.linalg.norm(b - rw)
+            crossed = np.linalg.norm(a - rw) + np.linalg.norm(b - lw)
+            left, right = (found[0], found[1]) if straight <= crossed else (found[1], found[0])
+        return left, right
+    # No body detected: the hand model labels assume a mirrored image, so on a
+    # normal camera frame its "Left" is the person's right hand.
+    for hand, label in zip(found, labels):
+        if label.lower().startswith("left"):
+            right = hand
+        else:
+            left = hand
+    return left, right

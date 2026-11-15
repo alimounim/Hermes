@@ -90,6 +90,44 @@ SIGN_MAP = {
     "help": "HELP",
     "time": "TIME",
     "now": "NOW",
+    # Needs
+    "drink": "DRINK",
+    "food": "FOOD",
+    "sleep": "SLEEP",
+    "sleepy": "SLEEPY",
+    "hot": "HOT",
+    "bath": "BATH",
+    "bed": "BED",
+    # Feelings
+    "bad": "BAD",
+    "better": "BETTER",
+    "happy": "HAPPY",
+    "sad": "SAD",
+    "cry": "CRY",
+    # Questions
+    "who": "WHO",
+    "why": "WHY",
+    # Actions
+    "go": "GO",
+    "stay": "STAY",
+    "give": "GIVE",
+    "have": "HAVE",
+    "look": "LOOK",
+    "listen": "LISTEN",
+    "find": "FIND",
+    # Time
+    "later": "LATER",
+    "tomorrow": "TOMORROW",
+    "yesterday": "YESTERDAY",
+    "morning": "MORNING",
+    "night": "NIGHT",
+    # Negation / quantity
+    "not": "NOT",
+    "another": "ANOTHER",
+    # People
+    "mom": "MOM",
+    "dad": "DAD",
+    "person": "PERSON",
 }
 
 WINDOW = config.WINDOW_SIZE
