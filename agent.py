@@ -60,15 +60,24 @@ GREETING = (
     "on my video on FaceTime. Watch that caption board, not Apple's captions."
 )
 
-# Portrait 9:16 — FaceTime on iPhone cover-crops landscape 16:9 and clips
-# left-aligned labels. Keep all text inside SAFE_* insets for UI chrome.
-BOARD_W = 720
-BOARD_H = 1280
+# Full-HD portrait publish; layout is fractional so it scales cleanly.
+# FaceTime cover-crops differently on phone (sides) vs Mac (top/bottom) —
+# keep the conversation stack inside the shared center safe zone.
+BOARD_W = 1080
+BOARD_H = 1920
 BOARD_FPS = 8
-SAFE_X = 100      # ~14% side margin — survives iPhone cover + edge crop
-SAFE_TOP = 110    # status / Dynamic Island
-SAFE_BOTTOM = 160 # FaceTime call controls
-CONTENT_W = BOARD_W - 2 * SAFE_X
+# Render at 2× then LANCZOS-downsample for retina-sharp glyphs on all devices.
+RENDER_SCALE = 2
+
+# Title-safe fractions (of published frame). Tuned against iPhone 390×844 and
+# Mac 1280×720 cover-crop simulations in scripts/preview_caption_board.py.
+SAFE_X_FRAC = 0.18
+SAFE_TOP_FRAC = 0.10
+SAFE_BOTTOM_FRAC = 0.12
+# Cross-device overlap: Mac landscape cover of 9:16 keeps only the center ~32%
+# of height — brand + YOU + REPLY must all live in this band.
+STACK_TOP_FRAC = 0.36
+STACK_BOTTOM_FRAC = 0.64
 
 _FONT_DIR = _ROOT / "assets" / "fonts"
 
@@ -141,34 +150,41 @@ def _load_font(name: str, size: int):
 
     path = _FONT_DIR / name
     try:
-        return ImageFont.truetype(str(path), size=size)
+        return ImageFont.truetype(str(path), size=max(1, int(size)))
     except OSError:
         return ImageFont.load_default()
 
 
-def _fill_atmosphere(rgb) -> None:
+def _px(frac: float, axis: str, scale: int = 1) -> int:
+    base = BOARD_W if axis == "x" else BOARD_H
+    return int(round(frac * base * scale))
+
+
+def _fill_atmosphere(rgb, w: int, h: int) -> None:
     """Deep ink → teal wash with a warm amber glow (not purple/cream AI defaults)."""
     from PIL import Image, ImageDraw
 
-    draw = ImageDraw.Draw(rgb, "RGBA")
-    for y in range(BOARD_H):
-        t = y / max(BOARD_H - 1, 1)
-        # top ink (12, 18, 28) → mid teal (18, 48, 58) → bottom charcoal (10, 14, 20)
-        if t < 0.45:
-            u = t / 0.45
-            r = int(12 + (18 - 12) * u)
-            g = int(18 + (48 - 18) * u)
-            b = int(28 + (58 - 28) * u)
-        else:
-            u = (t - 0.45) / 0.55
-            r = int(18 + (10 - 18) * u)
-            g = int(48 + (14 - 48) * u)
-            b = int(58 + (20 - 58) * u)
-        draw.line([(0, y), (BOARD_W, y)], fill=(r, g, b, 255))
-    # Soft amber glow behind brand (atmospheric, not a card)
-    glow = Image.new("RGBA", (BOARD_W, BOARD_H), (0, 0, 0, 0))
+    # Vectorized vertical gradient (fast at 2× retina sizes).
+    t = np.linspace(0.0, 1.0, h, dtype=np.float32)
+    mid = 0.45
+    u1 = np.clip(t / mid, 0.0, 1.0)
+    u2 = np.clip((t - mid) / (1.0 - mid), 0.0, 1.0)
+    top = np.array([12, 18, 28], dtype=np.float32)
+    midc = np.array([18, 48, 58], dtype=np.float32)
+    bot = np.array([10, 14, 20], dtype=np.float32)
+    # (H, 3) column colors, then broadcast across width — avoid axis scramble.
+    grad = np.empty((h, 3), dtype=np.float32)
+    mask = t < mid
+    grad[mask] = top + (midc - top) * u1[mask, None]
+    grad[~mask] = midc + (bot - midc) * u2[~mask, None]
+    frame = np.broadcast_to(grad.astype(np.uint8)[:, None, :], (h, w, 3)).copy()
+    base = Image.fromarray(frame, mode="RGB").convert("RGBA")
+    rgb.paste(base)
+
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
-    cx, cy, rad = BOARD_W // 2, SAFE_TOP + 40, 220
+    cx, cy = w // 2, int(h * STACK_TOP_FRAC) + w // 14
+    rad = w // 3
     for i in range(6, 0, -1):
         a = 18 if i == 6 else max(6, 28 - i * 4)
         gdraw.ellipse(
@@ -214,7 +230,6 @@ def _wrap_px(text: str, font, max_width: int, max_lines: int) -> List[str]:
         lines.append(cur)
     if not lines:
         lines = ["—"]
-    # Ellipsize last line if we still overflow
     if len(lines) == max_lines:
         last = lines[-1]
         while last and _text_width(font, last) > max_width:
@@ -224,104 +239,145 @@ def _wrap_px(text: str, font, max_width: int, max_lines: int) -> List[str]:
     return lines
 
 
+def _cover_crop_view(
+    bgr: np.ndarray, view_w: int, view_h: int
+) -> tuple[np.ndarray, int, int]:
+    """Simulate FaceTime object-fit:cover. Returns (crop, src_x0, src_y0)."""
+    h, w = bgr.shape[:2]
+    scale = max(view_w / w, view_h / h)
+    sw, sh = int(round(w * scale)), int(round(h * scale))
+    resized = cv2.resize(bgr, (sw, sh), interpolation=cv2.INTER_AREA)
+    x0 = max(0, (sw - view_w) // 2)
+    y0 = max(0, (sh - view_h) // 2)
+    crop = resized[y0 : y0 + view_h, x0 : x0 + view_w]
+    # Map crop origin back to source pixels.
+    src_x0 = int(round(x0 / scale))
+    src_y0 = int(round(y0 / scale))
+    return crop, src_x0, src_y0
+
+
 def render_caption_board(
     signer_text: str,
     reply_text: str,
     tokens: str = "",
 ) -> np.ndarray:
-    """BGR portrait board for FaceTime — safe margins, readable YOU/REPLY."""
+    """BGR HD portrait board — retina-sharp, device-safe YOU/REPLY stack."""
     from PIL import Image, ImageDraw
 
-    rgb = Image.new("RGBA", (BOARD_W, BOARD_H), (12, 18, 28, 255))
-    _fill_atmosphere(rgb)
+    s = RENDER_SCALE
+    rw, rh = BOARD_W * s, BOARD_H * s
+    rgb = Image.new("RGBA", (rw, rh), (12, 18, 28, 255))
+    _fill_atmosphere(rgb, rw, rh)
     draw = ImageDraw.Draw(rgb)
 
-    brand = _load_font("NotoSerifDisplay-Bold.ttf", 72)
-    tagline = _load_font("NotoSansDisplay-Regular.ttf", 22)
-    label = _load_font("NotoSansDisplay-Bold.ttf", 26)
-    body = _load_font("NotoSansDisplay-Regular.ttf", 36)
-    reply_body = _load_font("NotoSansDisplay-Bold.ttf", 44)
-    meta = _load_font("NotoSansDisplay-Regular.ttf", 20)
+    # Fractional → pixel layout at render resolution (responsive to BOARD_*).
+    safe_x = _px(SAFE_X_FRAC, "x", s)
+    content_w = rw - 2 * safe_x
+    stack_top = _px(STACK_TOP_FRAC, "y", s)
+    stack_bot = _px(STACK_BOTTOM_FRAC, "y", s)
+    stack_h = stack_bot - stack_top
+    pad = max(24 * s, content_w // 20)
+    gap = 14 * s
+    radius = 18 * s
 
-    x0 = SAFE_X
-    y = SAFE_TOP
+    # Type scale from width so glyphs stay proportional if BOARD_* changes.
+    brand = _load_font("NotoSerifDisplay-Bold.ttf", rw * 0.068)
+    tagline = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.024)
+    label = _load_font("NotoSansDisplay-Bold.ttf", rw * 0.028)
+    body = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.036)
+    reply_body = _load_font("NotoSansDisplay-Bold.ttf", rw * 0.044)
+    meta = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.022)
 
-    # Brand — hero signal (must survive without nav chrome)
+    x0 = safe_x
+
+    # Brand + stack share the Mac/phone overlap band (compact, no edge chrome).
+    header_h = int(stack_h * 0.24)
+    you_h = int(stack_h * 0.30)
+    reply_h = stack_h - header_h - you_h - 2 * gap
+    y = stack_top
+
     brand_text = "HERMES"
     bw = _text_width(brand, brand_text)
-    draw.text(((BOARD_W - bw) // 2, y), brand_text, font=brand, fill=(245, 232, 210, 255))
-    y += 82
+    draw.text(((rw - bw) // 2, y), brand_text, font=brand, fill=(245, 232, 210, 255))
+    y += int(rw * 0.068)
     tip = "You sign · I speak · replies below"
     tw = _text_width(tagline, tip)
-    draw.text(((BOARD_W - tw) // 2, y), tip, font=tagline, fill=(168, 196, 188, 255))
-    y += 48
-
-    # Accent rule
+    draw.text(((rw - tw) // 2, y), tip, font=tagline, fill=(168, 196, 188, 255))
+    # Clear gap under tagline so the accent rule does not look like a word underline.
+    y += int(rw * 0.042)
+    rule_w = int(rw * 0.05)
     draw.rectangle(
-        [BOARD_W // 2 - 36, y, BOARD_W // 2 + 36, y + 3],
+        [rw // 2 - rule_w, y, rw // 2 + rule_w, y + max(3, 3 * s)],
         fill=(212, 160, 72, 220),
     )
-    y += 28
+    y = stack_top + header_h
 
-    pad = 36
-    panel_w = CONTENT_W
-
-    # YOU panel (signer) — secondary
-    you_h = 260
     _rounded_rect(
         draw,
-        (x0, y, x0 + panel_w, y + you_h),
-        22,
-        (16, 36, 40, 210),
+        (x0, y, x0 + content_w, y + you_h),
+        radius,
+        (16, 36, 40, 220),
     )
-    draw.text((x0 + pad, y + 26), "YOU", font=label, fill=(120, 210, 170, 255))
+    draw.text((x0 + pad, y + pad // 3), "YOU", font=label, fill=(120, 210, 170, 255))
+    you_label_w = _text_width(label, "YOU")
     draw.text(
-        (x0 + pad + 78, y + 30),
+        (x0 + pad + you_label_w + 12 * s, y + pad // 3 + 3 * s),
         "signer",
         font=meta,
         fill=(140, 170, 160, 255),
     )
-    you_lines = _wrap_px(signer_text, body, panel_w - 2 * pad, max_lines=3)
-    ty = y + 78
+    you_lines = _wrap_px(signer_text, body, content_w - 2 * pad, max_lines=2)
+    line_gap = int(rw * 0.040)
+    ty = y + pad // 3 + int(rw * 0.042)
     for line in you_lines:
         draw.text((x0 + pad, ty), line, font=body, fill=(245, 248, 246, 255))
-        ty += 46
+        ty += line_gap
     if tokens:
         tok = f"Signs: {tokens}"
-        while _text_width(meta, tok) > panel_w - 2 * pad and len(tok) > 8:
+        while _text_width(meta, tok) > content_w - 2 * pad and len(tok) > 8:
             tok = tok[:-2]
-        draw.text((x0 + pad, y + you_h - 42), tok, font=meta, fill=(130, 150, 145, 255))
-    y += you_h + 32
+        draw.text(
+            (x0 + pad, y + you_h - pad // 2 - int(rw * 0.024)),
+            tok,
+            font=meta,
+            fill=(130, 150, 145, 255),
+        )
+    y += you_h + gap
 
-    # REPLY panel — primary for Deaf viewer (largest type)
-    reply_bottom = BOARD_H - SAFE_BOTTOM
-    reply_h = max(360, reply_bottom - y)
     _rounded_rect(
         draw,
-        (x0, y, x0 + panel_w, y + reply_h),
-        22,
-        (22, 42, 62, 230),
+        (x0, y, x0 + content_w, y + reply_h),
+        radius,
+        (22, 42, 62, 235),
     )
-    # Warm left rail for hierarchy (well inside safe margin)
+    rail = max(4 * s, content_w // 90)
     draw.rectangle(
-        [x0 + 18, y + 28, x0 + 24, y + reply_h - 28],
+        [x0 + pad // 2, y + pad // 3, x0 + pad // 2 + rail, y + reply_h - pad // 3],
         fill=(212, 160, 72, 230),
     )
-    draw.text((x0 + pad + 12, y + 28), "REPLY", font=label, fill=(180, 220, 255, 255))
+    tx = x0 + pad // 2 + rail + 10 * s
+    draw.text((tx, y + pad // 3), "REPLY", font=label, fill=(180, 220, 255, 255))
+    reply_label_w = _text_width(label, "REPLY")
     draw.text(
-        (x0 + pad + 118, y + 32),
+        (tx + reply_label_w + 12 * s, y + pad // 3 + 3 * s),
         "hearing person",
         font=meta,
         fill=(140, 175, 200, 255),
     )
-    reply_lines = _wrap_px(reply_text, reply_body, panel_w - 2 * pad - 16, max_lines=5)
-    ry = y + 84
+    reply_lines = _wrap_px(
+        reply_text, reply_body, content_w - pad - rail - 16 * s, max_lines=3
+    )
+    reply_gap = int(rw * 0.048)
+    ry = y + pad // 3 + int(rw * 0.046)
     for line in reply_lines:
-        draw.text((x0 + pad + 12, ry), line, font=reply_body, fill=(255, 255, 255, 255))
-        ry += 56
+        draw.text((tx, ry), line, font=reply_body, fill=(255, 255, 255, 255))
+        ry += reply_gap
 
-    bgr = cv2.cvtColor(np.array(rgb.convert("RGB")), cv2.COLOR_RGB2BGR)
-    return bgr
+    # Downsample 2× → publish size with high-quality filter (retina → HD).
+    rgb_full = rgb.convert("RGB")
+    if s != 1:
+        rgb_full = rgb_full.resize((BOARD_W, BOARD_H), Image.Resampling.LANCZOS)
+    return cv2.cvtColor(np.array(rgb_full), cv2.COLOR_RGB2BGR)
 
 
 def _bgr_to_rgba_bytes(bgr: np.ndarray) -> bytes:
