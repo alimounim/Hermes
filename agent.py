@@ -124,7 +124,13 @@ class HermesCallWorker:
     def __init__(self, ctx: JobContext, session: AgentSession) -> None:
         self.ctx = ctx
         self.session = session
-        self.recognizer = SignRecognizer()
+        # Prefer the shipped classifier; if load fails (format mismatch), keep
+        # the call alive for greeting + reply captions without sign video.
+        try:
+            self.recognizer: Optional[SignRecognizer] = SignRecognizer()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("classifier load failed — signs disabled: %s", exc)
+            self.recognizer = None
         self.captions: List[str] = []
         self.conversation: List[tuple[str, str]] = []
         self._latest_bgr: Optional[np.ndarray] = None
@@ -142,7 +148,8 @@ class HermesCallWorker:
             self._video_stream = None
         for task in list(self._tasks):
             task.cancel()
-        self.recognizer.close()
+        if self.recognizer is not None:
+            self.recognizer.close()
 
     async def speak_loop(self) -> None:
         while True:
@@ -245,6 +252,8 @@ class HermesCallWorker:
             self._busy = False
 
     def _process_frame_sync(self, frame_bgr: np.ndarray) -> None:
+        if self.recognizer is None:
+            return
         try:
             emitted, finished, _ = self.recognizer.process_frame(frame_bgr)
         except Exception as exc:  # noqa: BLE001

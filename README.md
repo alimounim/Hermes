@@ -91,10 +91,11 @@ GISLR covers everything except **I**, **MEDICINE**, and **PHARMACY** — record 
 ## Call mode (Chert FaceTime)
 
 1. Put keys in `.env` / `.env.local` (never chat): `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` (same LiveKit project), `ELEVENLABS_API_KEY`, optional `GEMINI_API_KEY`, `AGENT_NAME=hermes-agent`.
-2. Ensure a classifier exists (`python train.py` or temporary `python scripts/make_smoke_classifier.py`).
+2. Classifier ships at `models/sign_clf.joblib` (tracked in git). If missing locally: `git checkout origin/main -- models/sign_clf.joblib`, or `python train.py` / `python scripts/make_smoke_classifier.py`.
 3. Terminal A — start the agent worker:
 
 ```bash
+git pull origin cursor/hermes-phase2-facetime-24b1
 source .venv/bin/activate
 python agent.py start
 ```

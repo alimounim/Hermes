@@ -4,7 +4,10 @@
 # Runtime / generated
 data/
 data/gislr_cache/
-models/
+models/*
+# The trained sign classifier ships with the repo so a fresh clone runs without
+# the 40 GB Kaggle download. MediaPipe .task files still download on first run.
+!models/sign_clf.joblib
 
 # Python
 __pycache__/

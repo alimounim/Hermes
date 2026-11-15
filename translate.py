@@ -16,7 +16,12 @@ The input is ASL gloss: a short sequence of recognized sign tokens (possibly noi
 Known gloss vocabulary (ignore unknowns conservatively):
 _none (ignore), HELLO, THANK-YOU, PLEASE, YES, NO, WHERE, HEAD, PAIN, SICK,
 BATHROOM, WATER, HUNGRY, THIRSTY, NEED, WAIT, FINISH, BYE, FINE, YOU, MY,
-HOME, HELP, TIME, NOW, I, MEDICINE, PHARMACY.
+HOME, HELP, TIME, NOW, I, MEDICINE, PHARMACY,
+DRINK, FOOD, SLEEP, SLEEPY, HOT, BATH, BED, BAD, BETTER, HAPPY, SAD, CRY,
+WHO, WHY, GO, STAY, GIVE, HAVE, LOOK, LISTEN, FIND, LATER, TOMORROW,
+YESTERDAY, MORNING, NIGHT, NOT, ANOTHER, MOM, DAD, PERSON.
+Note: NOT negates the sign next to it (NOT HUNGRY → "I'm not hungry").
+ANOTHER means "another / one more". BAD + a body word usually means it feels bad.
 Note: PAIN means "it hurts / owie", BATHROOM covers toilet/restroom, NEED covers
 "have to / must". Prefer hospital/pharmacy phrasing when MEDICINE, PHARMACY,
 PAIN, SICK, HEAD, HELP, WATER, THIRSTY, or HUNGRY appear.
@@ -29,7 +34,11 @@ Rules:
 - Hospital / pharmacy / travel context is OK for small connecting words only.
 - Do NOT invent people, places, times, symptoms, or objects that are not suggested by the tokens or recent conversation.
 - If tokens are unclear, stay conservative: still make a grammatical sentence, but do not add new facts.
-- If recent conversation is provided, fit the answer to that dialogue when the gloss is a reply.
+- Translate ONLY the current gloss tokens. Recent conversation is context, not content: never repeat or merge in things the signer said earlier, and do not add words like "still" or "also" that refer back to earlier turns.
+- Use the conversation only to resolve a short reply to the hearing person's last question (e.g. reply "Do you need water?" + gloss YES → "Yes, I do.").
+- Repeated tokens (PLEASE PLEASE) mean the sign was emphasized or detected twice: say it once.
+- Every token must be reflected in the sentence. Never drop a token because it is awkward: TIME HELLO FINISH YES → "Hello, yes, is it time to finish?", not "Hello, is it time now?".
+- The signer may put words in ASL order (topic first, question word last: BATHROOM WHERE → "Where is the bathroom?"). Reorder freely into natural English.
 
 Examples (gloss → English):
 - WHERE MEDICINE PAIN → Where is the pain medicine?
@@ -97,35 +106,65 @@ def translate(
     parts: list[str] = []
     if conversation:
         ctx_lines = [f"{role}: {text}" for role, text in conversation[-6:]]
-        parts.append("Recent conversation:\n" + "\n".join(ctx_lines))
-    parts.append("ASL gloss tokens: " + " ".join(clean))
+        parts.append(
+            "Recent conversation (context only — do not repeat it):\n"
+            + "\n".join(ctx_lines)
+        )
+    parts.append("Current ASL gloss tokens to translate: " + " ".join(clean))
     parts.append("English sentence:")
     user_prompt = "\n\n".join(parts)
 
-    try:
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.3,
-                max_output_tokens=80,
+    client = _client(api_key)
+    # Try the configured model, then faster fallbacks. Busy models (503/504)
+    # fail fast instead of stalling the conversation.
+    models = list(dict.fromkeys([config.GEMINI_MODEL, *config.GEMINI_FALLBACK_MODELS]))
+    for model in models:
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.3,
+                    # Headroom for models that spend output tokens on thinking.
+                    max_output_tokens=512,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[translate] {model} failed: {str(exc)[:120]}")
+            continue
+        text = _clean(resp.text or "")
+        if text:
+            print(f"[translate] Gemini ({model}): {text!r}")
+            return text
+        print(f"[translate] {model} returned empty text")
+    print(f"[translate] all Gemini models failed — using token fallback: {fallback!r}")
+    return fallback
+
+
+_CLIENT: genai.Client | None = None
+
+
+def _client(api_key: str) -> genai.Client:
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=config.GEMINI_TIMEOUT_MS,
+                retry_options=types.HttpRetryOptions(attempts=1),
             ),
         )
-        text = (resp.text or "").strip()
-        # Strip accidental quotes / labels
-        if text.startswith(("\"", "'")) and text.endswith(("\"", "'")) and len(text) > 1:
-            text = text[1:-1].strip()
-        if "\n" in text:
-            text = text.splitlines()[0].strip()
-        if text.lower().startswith("english:"):
-            text = text.split(":", 1)[1].strip()
-        if not text:
-            print(f"[translate] empty Gemini response — fallback: {fallback!r}")
-            return fallback
-        print(f"[translate] Gemini ({config.GEMINI_MODEL}): {text!r}")
-        return text
-    except Exception as exc:  # noqa: BLE001
-        print(f"[translate] Gemini API failed ({exc}) — using token fallback: {fallback!r}")
-        return fallback
+    return _CLIENT
+
+
+def _clean(text: str) -> str:
+    """Strip accidental quotes / labels / extra lines from a model reply."""
+    text = text.strip()
+    if "\n" in text:
+        text = text.splitlines()[0].strip()
+    if text.lower().startswith("english:"):
+        text = text.split(":", 1)[1].strip()
+    if len(text) > 1 and text[0] in "\"'" and text[-1] in "\"'":
+        text = text[1:-1].strip()
+    return text
