@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -67,10 +68,14 @@ GREETING = (
 BOARD_LANDSCAPE = (1920, 1080)
 BOARD_PORTRAIT = (1080, 1920)
 BOARD_W, BOARD_H = BOARD_LANDSCAPE  # default; CaptionBoard may swap at runtime
-BOARD_FPS = 12
-# Encode budget for sharp glyphs (LiveKit defaults crush text when unset).
-BOARD_MAX_BITRATE = 6_000_000
-# Render at 2× then LANCZOS-downsample for retina-sharp glyphs on all devices.
+# Low fps → more bits per frame for static captions (screen-share style).
+BOARD_FPS = 5
+# Encode budget for sharp glyphs; FaceTime re-encodes again so leave headroom.
+BOARD_MAX_BITRATE = 8_000_000
+# Re-push identical frame occasionally so bridge/FaceTime keep the picture;
+# do NOT stream every tick — that defeats screencast zero-hertz and adds mush.
+BOARD_KEEPALIVE_SEC = 2.0
+# Render at 2× then downsample for glyph shapes; sharpen after.
 RENDER_SCALE = 2
 
 # Title-safe fractions (of published frame). Tuned for FaceTime fit + mild
@@ -172,43 +177,49 @@ def _px(frac: float, axis: str, scale: int = 1, *, w: int = BOARD_W, h: int = BO
 
 
 def _sharpen_bgr(bgr: np.ndarray) -> np.ndarray:
-    """Light unsharp mask so H.264 keeps glyph edges under FaceTime re-encode."""
-    blur = cv2.GaussianBlur(bgr, (0, 0), sigmaX=0.8)
-    return cv2.addWeighted(bgr, 1.22, blur, -0.22, 0)
+    """Unsharp mask so H.264 / FaceTime re-encode keep glyph edges."""
+    blur = cv2.GaussianBlur(bgr, (0, 0), sigmaX=0.9)
+    sharp = cv2.addWeighted(bgr, 1.45, blur, -0.45, 0)
+    # Mild contrast boost on luma — helps thin strokes survive compression.
+    lab = cv2.cvtColor(sharp, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.convertScaleAbs(l, alpha=1.08, beta=4)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
 def _fill_atmosphere(rgb, w: int, h: int) -> None:
-    """Deep ink → teal wash with a warm amber glow (not purple/cream AI defaults)."""
-    from PIL import Image, ImageDraw
+    """Flat ink background.
 
-    # Vectorized vertical gradient (fast at 2× retina sizes).
-    t = np.linspace(0.0, 1.0, h, dtype=np.float32)
-    mid = 0.45
-    u1 = np.clip(t / mid, 0.0, 1.0)
-    u2 = np.clip((t - mid) / (1.0 - mid), 0.0, 1.0)
-    top = np.array([12, 18, 28], dtype=np.float32)
-    midc = np.array([18, 48, 58], dtype=np.float32)
-    bot = np.array([10, 14, 20], dtype=np.float32)
-    # (H, 3) column colors, then broadcast across width — avoid axis scramble.
-    grad = np.empty((h, 3), dtype=np.float32)
-    mask = t < mid
-    grad[mask] = top + (midc - top) * u1[mask, None]
-    grad[~mask] = midc + (bot - midc) * u2[~mask, None]
-    frame = np.broadcast_to(grad.astype(np.uint8)[:, None, :], (h, w, 3)).copy()
-    base = Image.fromarray(frame, mode="RGB").convert("RGBA")
-    rgb.paste(base)
+    Soft gradients/glows steal H.264 bits from text edges and look like mosquito
+    noise after FaceTime re-encodes the bridge feed — keep the plate flat.
+    """
+    from PIL import Image
 
-    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(glow)
-    cx, cy = w // 2, int(h * 0.42)
-    rad = min(w, h) // 2
-    for i in range(6, 0, -1):
-        a = 18 if i == 6 else max(6, 28 - i * 4)
-        gdraw.ellipse(
-            [cx - rad * i // 6, cy - rad * i // 8, cx + rad * i // 6, cy + rad * i // 8],
-            fill=(212, 160, 72, a),
+    rgb.paste(Image.new("RGBA", (w, h), (14, 24, 30, 255)))
+
+
+def _draw_text(
+    draw,
+    xy: tuple[int, int],
+    text: str,
+    font,
+    fill: tuple[int, int, int, int],
+    *,
+    stroke: int = 0,
+    stroke_fill: tuple[int, int, int, int] = (0, 0, 0, 255),
+) -> None:
+    """Draw text with an optional dark outline (survives lossy re-encode)."""
+    if stroke > 0:
+        draw.text(
+            xy,
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=stroke,
+            stroke_fill=stroke_fill,
         )
-    rgb.alpha_composite(glow)
+    else:
+        draw.text(xy, text, font=font, fill=fill)
 
 
 def _fit_letterbox_view(
@@ -302,7 +313,7 @@ def render_caption_board(
     portrait = height >= width
     s = RENDER_SCALE
     rw, rh = width * s, height * s
-    rgb = Image.new("RGBA", (rw, rh), (12, 18, 28, 255))
+    rgb = Image.new("RGBA", (rw, rh), (14, 24, 30, 255))
     _fill_atmosphere(rgb, rw, rh)
     draw = ImageDraw.Draw(rgb)
 
@@ -317,87 +328,141 @@ def render_caption_board(
     content_w = rw - 2 * safe_x
     gap = max(18 * s, content_w // 48)
     pad = max(28 * s, content_w // 36)
-    radius = 22 * s
-
-    # Scale type from the shorter axis so glyphs stay large on either aspect.
+    radius = 18 * s
     short = min(rw, rh)
-    brand = _load_font("NotoSerifDisplay-Bold.ttf", short * (0.078 if portrait else 0.085))
-    tagline = _load_font("NotoSansDisplay-Regular.ttf", short * 0.032)
-    label = _load_font("NotoSansDisplay-Bold.ttf", short * 0.038)
-    body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.048 if portrait else 0.055))
-    reply_body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.052 if portrait else 0.060))
-    meta = _load_font("NotoSansDisplay-Regular.ttf", short * 0.030)
+    # Outline width scales with render resolution — keeps edges after downsample.
+    stroke_lg = max(3 * s, int(short * 0.006))
+    stroke_sm = max(2 * s, int(short * 0.004))
+
+    # Large bold type — FaceTime re-encode destroys thin glyphs.
+    brand = _load_font("NotoSerifDisplay-Bold.ttf", short * (0.095 if portrait else 0.100))
+    tagline = _load_font("NotoSansDisplay-Bold.ttf", short * 0.036)
+    label = _load_font("NotoSansDisplay-Bold.ttf", short * 0.044)
+    body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.058 if portrait else 0.068))
+    reply_body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.062 if portrait else 0.072))
+    meta = _load_font("NotoSansDisplay-Bold.ttf", short * 0.034)
 
     y = max(safe_top, stack_top)
     brand_text = "HERMES"
     bw = _text_width(brand, brand_text)
-    draw.text(((rw - bw) // 2, y), brand_text, font=brand, fill=(245, 232, 210, 255))
-    y += int(short * 0.090)
+    _draw_text(
+        draw,
+        ((rw - bw) // 2, y),
+        brand_text,
+        brand,
+        (255, 248, 230, 255),
+        stroke=stroke_lg,
+        stroke_fill=(0, 0, 0, 255),
+    )
+    y += int(short * 0.105)
     tip = "You sign · I speak · REPLY listens"
     tw = _text_width(tagline, tip)
-    draw.text(((rw - tw) // 2, y), tip, font=tagline, fill=(168, 196, 188, 255))
-    y += int(short * 0.048)
-    rule_w = int(rw * 0.04)
-    draw.rectangle(
-        [rw // 2 - rule_w, y, rw // 2 + rule_w, y + max(3, 3 * s)],
-        fill=(212, 160, 72, 220),
+    _draw_text(
+        draw,
+        ((rw - tw) // 2, y),
+        tip,
+        tagline,
+        (200, 230, 220, 255),
+        stroke=stroke_sm,
+        stroke_fill=(0, 0, 0, 255),
     )
-    y += int(short * 0.032)
+    y += int(short * 0.052)
+    rule_w = int(rw * 0.045)
+    draw.rectangle(
+        [rw // 2 - rule_w, y, rw // 2 + rule_w, y + max(4, 4 * s)],
+        fill=(212, 160, 72, 255),
+    )
+    y += int(short * 0.028)
 
     panel_top = y
     panel_bot = stack_bot
     panel_h = max(1, panel_bot - panel_top)
 
     def _draw_you(x0: int, top: int, pw: int, ph: int, max_lines: int) -> None:
-        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (16, 36, 40, 220))
-        draw.text((x0 + pad, top + pad // 2), "YOU", font=label, fill=(120, 210, 170, 255))
+        # Opaque flat panels — no translucent mush for the encoder.
+        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (18, 42, 46, 255))
+        _draw_text(
+            draw,
+            (x0 + pad, top + pad // 2),
+            "YOU",
+            label,
+            (120, 230, 180, 255),
+            stroke=stroke_sm,
+        )
         you_label_w = _text_width(label, "YOU")
-        draw.text(
+        _draw_text(
+            draw,
             (x0 + pad + you_label_w + 14 * s, top + pad // 2 + 4 * s),
             "signer",
-            font=meta,
-            fill=(140, 170, 160, 255),
+            meta,
+            (180, 210, 200, 255),
+            stroke=max(1, stroke_sm // 2),
         )
         you_lines = _wrap_px(signer_text, body, pw - 2 * pad, max_lines=max_lines)
-        line_gap = int(short * 0.070)
-        ty = top + pad // 2 + int(short * 0.070)
+        line_gap = int(short * 0.078)
+        ty = top + pad // 2 + int(short * 0.078)
         for line in you_lines:
-            draw.text((x0 + pad, ty), line, font=body, fill=(245, 248, 246, 255))
+            _draw_text(
+                draw,
+                (x0 + pad, ty),
+                line,
+                body,
+                (255, 255, 255, 255),
+                stroke=stroke_lg,
+            )
             ty += line_gap
         if tokens:
             tok = f"Signs: {tokens}"
             while _text_width(meta, tok) > pw - 2 * pad and len(tok) > 8:
                 tok = tok[:-2]
-            draw.text(
-                (x0 + pad, top + ph - pad // 2 - int(short * 0.036)),
+            _draw_text(
+                draw,
+                (x0 + pad, top + ph - pad // 2 - int(short * 0.040)),
                 tok,
-                font=meta,
-                fill=(130, 150, 145, 255),
+                meta,
+                (170, 200, 190, 255),
+                stroke=max(1, stroke_sm // 2),
             )
 
     def _draw_reply(x0: int, top: int, pw: int, ph: int, max_lines: int) -> None:
-        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (22, 42, 62, 235))
-        rail = max(5 * s, pw // 70)
+        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (24, 48, 72, 255))
+        rail = max(6 * s, pw // 60)
         draw.rectangle(
             [x0 + pad // 2, top + pad // 2, x0 + pad // 2 + rail, top + ph - pad // 2],
-            fill=(212, 160, 72, 230),
+            fill=(212, 160, 72, 255),
         )
         tx = x0 + pad // 2 + rail + 12 * s
-        draw.text((tx, top + pad // 2), "REPLY", font=label, fill=(180, 220, 255, 255))
+        _draw_text(
+            draw,
+            (tx, top + pad // 2),
+            "REPLY",
+            label,
+            (190, 230, 255, 255),
+            stroke=stroke_sm,
+        )
         reply_label_w = _text_width(label, "REPLY")
-        draw.text(
+        _draw_text(
+            draw,
             (tx + reply_label_w + 14 * s, top + pad // 2 + 4 * s),
             "hearing person",
-            font=meta,
-            fill=(140, 175, 200, 255),
+            meta,
+            (170, 205, 230, 255),
+            stroke=max(1, stroke_sm // 2),
         )
         reply_lines = _wrap_px(
             reply_text, reply_body, pw - pad - rail - 20 * s, max_lines=max_lines
         )
-        reply_gap = int(short * 0.075)
-        ry = top + pad // 2 + int(short * 0.075)
+        reply_gap = int(short * 0.082)
+        ry = top + pad // 2 + int(short * 0.082)
         for line in reply_lines:
-            draw.text((tx, ry), line, font=reply_body, fill=(255, 255, 255, 255))
+            _draw_text(
+                draw,
+                (tx, ry),
+                line,
+                reply_body,
+                (255, 255, 255, 255),
+                stroke=stroke_lg,
+            )
             ry += reply_gap
 
     if portrait:
@@ -412,11 +477,15 @@ def render_caption_board(
         _draw_you(safe_x, panel_top, panel_w, panel_h, max_lines=4)
         _draw_reply(safe_x + panel_w + gap, panel_top, panel_w, panel_h, max_lines=4)
 
-    # Downsample 2× → publish size with high-quality filter (retina → HD).
+    # Downsample 2× → publish size, then sharpen for the lossy FaceTime path.
     rgb_full = rgb.convert("RGB")
     if s != 1:
-        rgb_full = rgb_full.resize((width, height), Image.Resampling.LANCZOS)
-    bgr = cv2.cvtColor(np.array(rgb_full), cv2.COLOR_RGB2BGR)
+        # AREA downsample keeps edges harder than LANCZOS for video text.
+        arr = np.array(rgb_full)
+        bgr_hi = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        bgr = cv2.resize(bgr_hi, (width, height), interpolation=cv2.INTER_AREA)
+    else:
+        bgr = cv2.cvtColor(np.array(rgb_full), cv2.COLOR_RGB2BGR)
     return _sharpen_bgr(bgr)
 
 
@@ -439,21 +508,31 @@ class CaptionBoard:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._adapt_lock = asyncio.Lock()
+        self._dirty = True
+        self._cached_rgba: Optional[bytes] = None
+        self._cache_key: Optional[tuple] = None
+        self._last_push = 0.0
         self._build_source()
 
     def _build_source(self) -> None:
-        # Screencast hint: keep resolution under congestion, no denoise mush.
+        # Screencast hint: keep resolution under congestion, no denoise mush,
+        # zero-hertz when the board is static (see dirty/keepalive loop).
         self._source = rtc.VideoSource(self.width, self.height, is_screencast=True)
         self._track = rtc.LocalVideoTrack.create_video_track(
             "hermes-captions", self._source
         )
+        self._cached_rgba = None
+        self._cache_key = None
+        self._dirty = True
 
     def _publish_opts(self) -> rtc.TrackPublishOptions:
         return rtc.TrackPublishOptions(
-            source=rtc.TrackSource.SOURCE_CAMERA,
+            source=rtc.TrackSource.SOURCE_CAMERA,  # Chert requires camera, not screenshare
             # Single high-quality layer — avoid a low simulcast tier on FaceTime.
             simulcast=False,
             video_codec=rtc.VideoCodec.H264,
+            # Software encode often keeps text edges better than HW defaults.
+            video_encoder=rtc.VideoEncoderBackend.ENCODER_BACKEND_SOFTWARE,
             video_encoding=rtc.VideoEncoding(
                 max_bitrate=BOARD_MAX_BITRATE,
                 max_framerate=float(BOARD_FPS),
@@ -461,20 +540,42 @@ class CaptionBoard:
             degradation_preference=rtc.DegradationPreference.MAINTAIN_RESOLUTION,
         )
 
-    async def start(self, room: rtc.Room) -> None:
-        self._room = room
+    async def _publish(self, room: rtc.Room) -> None:
         assert self._track is not None
-        await room.local_participant.publish_track(self._track, self._publish_opts())
-        self._running = True
-        self._push_frame()
-        self._task = asyncio.create_task(self._loop())
+        pub = await room.local_participant.publish_track(
+            self._track, self._publish_opts()
+        )
+        # Confirm LiveKit accepted the source dimensions (not a tiny default).
+        pub_w = getattr(pub, "width", None) or 0
+        pub_h = getattr(pub, "height", None) or 0
         logger.info(
-            "published hermes-captions video board (%dx%d @ %dfps, %dkbit, screencast)",
+            "published hermes-captions board source=%dx%d pub=%dx%d "
+            "fps=%d bitrate=%dkbit screencast=1 simulcast=%s mime=%s",
             self.width,
             self.height,
+            pub_w,
+            pub_h,
             BOARD_FPS,
             BOARD_MAX_BITRATE // 1000,
+            getattr(pub, "simulcasted", None),
+            getattr(pub, "mime_type", None),
         )
+        if pub_w and pub_h and (pub_w < self.width * 0.9 or pub_h < self.height * 0.9):
+            logger.warning(
+                "LiveKit publication smaller than source (%dx%d < %dx%d) — "
+                "FaceTime will look soft if the bridge keeps this layer",
+                pub_w,
+                pub_h,
+                self.width,
+                self.height,
+            )
+
+    async def start(self, room: rtc.Room) -> None:
+        self._room = room
+        await self._publish(room)
+        self._running = True
+        self._push_frame(force=True)
+        self._task = asyncio.create_task(self._loop())
 
     async def adapt_to_remote_frame(self, frame_w: int, frame_h: int) -> None:
         """Match board aspect to the caller's FaceTime camera (Mac vs iPhone)."""
@@ -504,8 +605,8 @@ class CaptionBoard:
                     await old_source.aclose()
             except Exception:  # noqa: BLE001
                 pass
-            await room.local_participant.publish_track(self._track, self._publish_opts())
-            self._push_frame()
+            await self._publish(room)
+            self._push_frame(force=True)
             logger.info(
                 "adapted hermes-captions board to %dx%d (remote %dx%d)",
                 self.width,
@@ -521,36 +622,61 @@ class CaptionBoard:
         reply: Optional[str] = None,
         tokens: Optional[str] = None,
     ) -> None:
-        if signer is not None:
+        changed = False
+        if signer is not None and signer != self.signer_text:
             self.signer_text = signer
-        if reply is not None:
+            changed = True
+        if reply is not None and reply != self.reply_text:
             self.reply_text = reply
-        if tokens is not None:
+            changed = True
+        if tokens is not None and tokens != self.tokens:
             self.tokens = tokens
+            changed = True
+        if changed:
+            self._dirty = True
 
-    def _push_frame(self) -> None:
+    def _push_frame(self, *, force: bool = False) -> None:
         if self._source is None:
             return
-        bgr = render_caption_board(
-            self.signer_text,
-            self.reply_text,
-            self.tokens,
-            width=self.width,
-            height=self.height,
-        )
+        key = (self.signer_text, self.reply_text, self.tokens, self.width, self.height)
+        if (
+            not force
+            and self._cached_rgba is not None
+            and self._cache_key == key
+        ):
+            rgba = self._cached_rgba
+        else:
+            bgr = render_caption_board(
+                self.signer_text,
+                self.reply_text,
+                self.tokens,
+                width=self.width,
+                height=self.height,
+            )
+            # Sanity: published pixels must match the LiveKit source size.
+            assert bgr.shape[1] == self.width and bgr.shape[0] == self.height, bgr.shape
+            rgba = _bgr_to_rgba_bytes(bgr)
+            self._cached_rgba = rgba
+            self._cache_key = key
         frame = rtc.VideoFrame(
             self.width,
             self.height,
             rtc.VideoBufferType.RGBA,
-            _bgr_to_rgba_bytes(bgr),
+            rgba,
         )
         self._source.capture_frame(frame)
+        self._last_push = time.monotonic()
+        self._dirty = False
 
     async def _loop(self) -> None:
+        """Push on content change; keepalive rarely so screencast zero-hertz works."""
         try:
             while self._running:
-                self._push_frame()
-                await asyncio.sleep(1.0 / BOARD_FPS)
+                now = time.monotonic()
+                due_keepalive = (now - self._last_push) >= BOARD_KEEPALIVE_SEC
+                if self._dirty or due_keepalive:
+                    self._push_frame(force=due_keepalive and not self._dirty)
+                await asyncio.sleep(1.0 / max(BOARD_FPS, 1))
         except asyncio.CancelledError:
             raise
 
