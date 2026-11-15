@@ -90,11 +90,11 @@ def main() -> None:
     cv2.imwrite(str(out / "caption-board-tile.png"), tile)
 
     assert agent.BOARD_MAX_BITRATE >= 8_000_000, agent.BOARD_MAX_BITRATE
-    assert agent.BOARD_FPS <= 5, agent.BOARD_FPS
+    assert agent.BOARD_FPS >= 10, agent.BOARD_FPS  # bridge shows gray on slow streams
     print(
         f"ok land={lw}x{lh} port={pw}x{ph} @{agent.RENDER_SCALE}x "
         f"bitrate={agent.BOARD_MAX_BITRATE} fps={agent.BOARD_FPS} "
-        f"keepalive={agent.BOARD_KEEPALIVE_SEC}s "
+        f"steady stream "
         f"mac_land_fill={fill_ratio:.3f} mac_port_fill={old_fill:.3f} "
         f"iphone_port_fill={phone_fill:.3f} "
         f"iphone_cover_x={sx} mac_cover_y={my2} -> {out}"

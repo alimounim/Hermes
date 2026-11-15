@@ -68,13 +68,12 @@ GREETING = (
 BOARD_LANDSCAPE = (1920, 1080)
 BOARD_PORTRAIT = (1080, 1920)
 BOARD_W, BOARD_H = BOARD_LANDSCAPE  # default; CaptionBoard may swap at runtime
-# Low fps → more bits per frame for static captions (screen-share style).
-BOARD_FPS = 5
+# Steady frame rate. The FaceTime bridge treats a slow or "zero-hertz" stream as
+# a dead camera and shows a gray tile, so the board is pushed every tick even
+# when nothing changed (the rendered frame is cached, so this is cheap).
+BOARD_FPS = 15
 # Encode budget for sharp glyphs; FaceTime re-encodes again so leave headroom.
 BOARD_MAX_BITRATE = 8_000_000
-# Re-push identical frame occasionally so bridge/FaceTime keep the picture;
-# do NOT stream every tick — that defeats screencast zero-hertz and adds mush.
-BOARD_KEEPALIVE_SEC = 2.0
 # Render at 2× then downsample for glyph shapes; sharpen after.
 RENDER_SCALE = 2
 
@@ -669,14 +668,13 @@ class CaptionBoard:
         self._dirty = False
 
     async def _loop(self) -> None:
-        """Push on content change; keepalive rarely so screencast zero-hertz works."""
+        """Push a frame every tick; re-render only when the captions changed."""
+        period = 1.0 / max(BOARD_FPS, 1)
         try:
             while self._running:
-                now = time.monotonic()
-                due_keepalive = (now - self._last_push) >= BOARD_KEEPALIVE_SEC
-                if self._dirty or due_keepalive:
-                    self._push_frame(force=due_keepalive and not self._dirty)
-                await asyncio.sleep(1.0 / max(BOARD_FPS, 1))
+                started = time.monotonic()
+                self._push_frame()
+                await asyncio.sleep(max(0.0, period - (time.monotonic() - started)))
         except asyncio.CancelledError:
             raise
 
