@@ -10,5 +10,6 @@ sounddevice>=0.4.6
 soundfile>=0.12
 kaggle>=1.6
 kagglesdk>=0.1
+six>=1.16
 pandas>=2.0
 pyarrow>=14.0

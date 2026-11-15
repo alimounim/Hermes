@@ -14,7 +14,7 @@ Setup (once):
          (filename must be literally access_token — NOT a file named KGAT_….
           Copy the token text first; or: export KAGGLE_API_TOKEN=<token>)
        - legacy kaggle.json: mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
-  3. pip install kaggle kagglesdk pandas pyarrow
+  3. pip install kaggle kagglesdk six pandas pyarrow
      (same Python that will run this script: python -m pip install ...)
 
 Run (from ~/Hermes):
@@ -97,10 +97,10 @@ def _api():
         import kaggle
     except ImportError as exc:
         raise SystemExit(
-            f"Cannot import kaggle ({exc}).\n"
+            f"Cannot import kaggle: {type(exc).__name__}: {exc}\n"
             "Install into THIS interpreter:\n"
-            "  python -m pip install -U kaggle kagglesdk pandas pyarrow\n"
-            f"  python -c \"import sys; print(sys.executable)\""
+            "  python -m pip install -U kaggle kagglesdk six pandas pyarrow\n"
+            "  python -c \"import sys; print(sys.executable)\""
         ) from exc
 
     api = getattr(kaggle, "api", None)
@@ -111,9 +111,9 @@ def _api():
         from kaggle.api.kaggle_api_extended import KaggleApi
     except ImportError as exc:
         raise SystemExit(
-            f"Cannot import KaggleApi ({exc}).\n"
+            f"Cannot import KaggleApi: {type(exc).__name__}: {exc}\n"
             "Try: python -m pip uninstall -y kaggle kagglesdk && "
-            "python -m pip install -U kaggle kagglesdk pandas pyarrow"
+            "python -m pip install -U kaggle kagglesdk six pandas pyarrow"
         ) from exc
 
     api = KaggleApi()
