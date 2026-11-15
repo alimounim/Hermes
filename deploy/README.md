@@ -1,4 +1,25 @@
-# Run Hermes on a server
+# Run Hermes without terminal windows
+
+## On your Mac (simplest)
+
+`deploy/macos/hermes.sh` runs the agent and the Chert bridge as macOS
+background services: they start at login, restart within seconds after a
+crash, and keep the Mac from idle-sleeping while they run. Stop any
+`agent.py` or `chert dev` you started in a terminal first.
+
+```bash
+deploy/macos/hermes.sh on       # start (installs the services the first time)
+deploy/macos/hermes.sh status   # running?
+deploy/macos/hermes.sh logs     # follow the logs (~/Library/Logs/Hermes)
+deploy/macos/hermes.sh off      # stop and free the FaceTime line
+```
+
+Keep the Mac plugged in, online and open: closing a MacBook's lid still
+puts it to sleep unless an external display is attached. The Chert sign-in
+lasts 30 days; if the bridge log says you are signed out, run
+`npx @trychert/facetime@0.1.0-beta.21 login`, then `hermes.sh on` again.
+
+## On a Linux server
 
 This keeps the FaceTime line answering without your laptop. Two services run on
 one Linux server:

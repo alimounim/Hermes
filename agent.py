@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -897,8 +898,9 @@ class HermesCallWorker:
     def on_transcript(self, ev: UserInputTranscribedEvent) -> None:
         if not ev.is_final:
             return
-        text = (ev.transcript or "").strip()
-        if not text:
+        # Drop sound labels like [clicking] or (music) that STT adds for noise.
+        text = " ".join(re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", ev.transcript or "").split())
+        if not any(ch.isalnum() for ch in text):
             return
         self.captions.append(text)
         self.conversation.append(("reply", text))
