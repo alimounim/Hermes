@@ -312,7 +312,7 @@ function card(s, term, pos) {
   const t = tier(s);
   const pills = [
     s.off ? '<span class="pill off">Not in the current model</span>' : "",
-    LIVE.has(s.label) ? '<span class="pill live">Worked in your live test</span>' : "",
+    LIVE.has(s.label) ? '<span class="pill live">Worked in our live test</span>' : "",
   ].join("");
   const rel = s.off ? "" : `<div class="rel"><div class="row"><span>${t.name}</span><b>${s.acc}%</b></div>
     <div class="meter" role="img" aria-label="${s.acc}% recognized correctly"><i style="width:${s.acc}%;--m:var(${t.c})"></i></div>
