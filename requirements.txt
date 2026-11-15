@@ -13,3 +13,5 @@ kagglesdk>=0.1
 six>=1.16
 pandas>=2.0
 pyarrow>=14.0
+livekit-agents[elevenlabs,silero]~=1.2
+livekit>=0.22
