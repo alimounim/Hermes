@@ -110,6 +110,8 @@ npx --yes --prefer-online @trychert/facetime@0.1.0-beta.21 dev --agent hermes-ag
 
 5. From an iPhone: FaceTime **Video** to **+17025109706** (or text `join Q7UYAY` to that number once if joining from another phone). You should hear Hermes greet within ~10s, then spoken English when signs are recognized.
 
+**What FaceTime call mode does today (one mode):** you sign → Hermes **speaks** English into the call. Hearing-person speech is transcribed and shown as **Reply** text on Hermes’ published video board (Apple FaceTime has no agent caption API — watch Hermes’ video pane). There is no in-call mode picker UI; the spoken greeting is the how-to.
+
 Trial note: Chert-managed LiveKit (`chert livekit`) is not provisioned on this trial — use your own LiveKit Cloud project.
 
 ## Troubleshooting
