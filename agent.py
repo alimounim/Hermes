@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -325,7 +326,10 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 if __name__ == "__main__":
-    _require_runtime()
+    # download-files / --help must work without LiveKit keys; start/dev need them.
+    _cmd = next((a for a in sys.argv[1:] if not a.startswith("-")), "")
+    if _cmd in ("", "start", "dev", "console"):
+        _require_runtime()
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
