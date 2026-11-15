@@ -7,13 +7,13 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Optional
 
-import cv2
-import mediapipe as mp
 import numpy as np
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
 
 import config
+
+# cv2 / mediapipe are only needed for live camera tracking. Pure feature helpers
+# (normalize_hand, window_features) stay importable without those packages so
+# import_gislr.py can run in a lighter env.
 
 
 def ensure_hand_model(path: Path = config.HAND_LANDMARKER_MODEL) -> Path:
@@ -35,7 +35,7 @@ def ensure_hand_model(path: Path = config.HAND_LANDMARKER_MODEL) -> Path:
     return path
 
 
-def _normalize_hand(points: np.ndarray) -> np.ndarray:
+def normalize_hand(points: np.ndarray) -> np.ndarray:
     """Subtract wrist, scale by max 2D distance from wrist. Shape (21, 3)."""
     wrist = points[0].copy()
     points = points - wrist
@@ -46,7 +46,11 @@ def _normalize_hand(points: np.ndarray) -> np.ndarray:
     return points
 
 
-def landmarks_to_vector(result: mp_vision.HandLandmarkerResult) -> np.ndarray:
+# Back-compat alias used by older call sites / scripts.
+_normalize_hand = normalize_hand
+
+
+def landmarks_to_vector(result) -> np.ndarray:
     """
     Pack detected hands into a 126-dim vector.
     Slot by handedness (Left / Right); zeros if a hand is missing.
@@ -60,7 +64,7 @@ def landmarks_to_vector(result: mp_vision.HandLandmarkerResult) -> np.ndarray:
 
     for i, hand_lms in enumerate(result.hand_landmarks):
         pts = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms], dtype=np.float32)
-        pts = _normalize_hand(pts)
+        pts = normalize_hand(pts)
         label = "Unknown"
         if result.handedness and i < len(result.handedness):
             cats = result.handedness[i]
@@ -92,6 +96,12 @@ class HandTracker:
     """Wraps MediaPipe Tasks HandLandmarker in VIDEO mode."""
 
     def __init__(self, model_path: Optional[Path] = None) -> None:
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        self._mp = mp
+        self._mp_vision = mp_vision
         model_path = ensure_hand_model(model_path or config.HAND_LANDMARKER_MODEL)
         options = mp_vision.HandLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=str(model_path)),
@@ -104,10 +114,13 @@ class HandTracker:
         self._landmarker = mp_vision.HandLandmarker.create_from_options(options)
         self._timestamp_ms = 0
         self._window: Deque[np.ndarray] = deque(maxlen=config.WINDOW_SIZE)
-        self._last_result: Optional[mp_vision.HandLandmarkerResult] = None
+        self._last_result = None
 
-    def process(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, mp_vision.HandLandmarkerResult]:
+    def process(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, object]:
         """Run detection on a BGR OpenCV frame. Returns (126-vector, raw result)."""
+        import cv2
+
+        mp = self._mp
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         self._timestamp_ms += 33  # ~30 FPS
@@ -127,7 +140,7 @@ class HandTracker:
         self._window.clear()
 
     @property
-    def last_result(self) -> Optional[mp_vision.HandLandmarkerResult]:
+    def last_result(self):
         return self._last_result
 
     def close(self) -> None:
@@ -150,8 +163,10 @@ _HAND_CONNECTIONS = (
 )
 
 
-def draw_landmarks(frame_bgr: np.ndarray, result: Optional[mp_vision.HandLandmarkerResult]) -> None:
+def draw_landmarks(frame_bgr: np.ndarray, result) -> None:
     """Draw hand landmarks + connections onto a BGR frame in-place."""
+    import cv2
+
     if result is None or not result.hand_landmarks:
         return
     h, w = frame_bgr.shape[:2]

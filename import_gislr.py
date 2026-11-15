@@ -11,9 +11,11 @@ Setup (once):
      and click "I Understand and Accept".
   2. kaggle.com -> Settings -> API -> "Create New Token". Then EITHER
        - new-style token:  mkdir -p ~/.kaggle && pbpaste > ~/.kaggle/access_token
-         (copy the token first; or: export KAGGLE_API_TOKEN=<token>)
+         (filename must be literally access_token — NOT a file named KGAT_….
+          Copy the token text first; or: export KAGGLE_API_TOKEN=<token>)
        - legacy kaggle.json: mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
-  3. pip install kaggle pandas pyarrow
+  3. pip install kaggle kagglesdk pandas pyarrow
+     (same Python that will run this script: python -m pip install ...)
 
 Run (from ~/Hermes):
   python import_gislr.py                 # default: 60 clips per sign
@@ -33,10 +35,18 @@ import numpy as np
 import pandas as pd
 
 import config
-from landmarks import _normalize_hand, window_features
+from landmarks import normalize_hand, window_features
 
 COMPETITION = "asl-signs"
 CACHE = config.DATA_DIR / "gislr_cache"
+AUTH_HELP = (
+    "Kaggle login failed.\n"
+    "Save your API token as the file ~/.kaggle/access_token\n"
+    "(filename must be literally 'access_token'; file contents = the KGAT_… token).\n"
+    "Do NOT name the file after the token itself.\n"
+    "Or: export KAGGLE_API_TOKEN='KGAT_…'\n"
+    "Or legacy: ~/.kaggle/kaggle.json"
+)
 
 # Dataset sign name -> Hermes label. Signs missing from the dataset are skipped
 # with a warning. I, MEDICINE and PHARMACY are not in this dataset; your own
@@ -77,17 +87,44 @@ ASPECT_FIX = (config.FRAME_HEIGHT / config.FRAME_WIDTH) / (4 / 3)
 
 
 def _api():
+    """Return an authenticated Kaggle API client.
+
+    Prefer the module-level `kaggle.api` (already authenticated on import in
+    kaggle>=1.7). Fall back to constructing KaggleApi. Surface the real error
+    instead of a misleading 'pip install' message.
+    """
+    try:
+        import kaggle
+    except ImportError as exc:
+        raise SystemExit(
+            f"Cannot import kaggle ({exc}).\n"
+            "Install into THIS interpreter:\n"
+            "  python -m pip install -U kaggle kagglesdk pandas pyarrow\n"
+            f"  python -c \"import sys; print(sys.executable)\""
+        ) from exc
+
+    api = getattr(kaggle, "api", None)
+    if api is not None and getattr(api, "_authenticated", False):
+        return api
+
     try:
         from kaggle.api.kaggle_api_extended import KaggleApi
     except ImportError as exc:
-        raise SystemExit("Run: pip install kaggle pandas pyarrow") from exc
+        raise SystemExit(
+            f"Cannot import KaggleApi ({exc}).\n"
+            "Try: python -m pip uninstall -y kaggle kagglesdk && "
+            "python -m pip install -U kaggle kagglesdk pandas pyarrow"
+        ) from exc
+
     api = KaggleApi()
     try:
         api.authenticate()
+    except SystemExit as exc:
+        raise SystemExit(AUTH_HELP) from exc
     except Exception as exc:  # noqa: BLE001
-        raise SystemExit(
-            "Kaggle login failed. Save your API token in ~/.kaggle/ (see the top of this file)."
-        ) from exc
+        raise SystemExit(f"{AUTH_HELP}\nUnderlying error: {exc}") from exc
+    if not getattr(api, "_authenticated", True):
+        raise SystemExit(AUTH_HELP)
     return api
 
 
@@ -122,7 +159,7 @@ def _frame_vectors(parquet: Path) -> list[np.ndarray]:
             if len(pts) != config.LANDMARKS_PER_HAND or np.isnan(pts).any():
                 continue
             pts[:, 0] *= ASPECT_FIX
-            vec[slot] = _normalize_hand(pts)
+            vec[slot] = normalize_hand(pts)
             has_hand = True
         if has_hand:
             vectors.append(vec.reshape(-1))
