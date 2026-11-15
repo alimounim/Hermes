@@ -1,8 +1,8 @@
 """Import signs from Google's Isolated Sign Language Recognition dataset (Kaggle "asl-signs").
 
 The dataset is 250 ASL signs recorded by 21 Deaf signers, already converted to
-MediaPipe landmarks. This script prefers ONE bulk competition zip download
-(avoids hundreds of per-parquet API calls that trigger 429 rate limits), then
+MediaPipe landmarks. This script downloads train.csv plus only the parquet
+clips it selects (~1.5MB each, sequentially with backoff on 429s), then
 converts only the signs Hermes needs into the same 15-frame window features that
 collect.py produces, and saves them into data/samples/<LABEL>/ so train.py works
 unchanged. Your own recordings in data/samples stay and get trained together.
@@ -19,14 +19,13 @@ Setup (once):
      (same Python that will run this script: python -m pip install ...)
 
 Run (from ~/Hermes):
-  python import_gislr.py --force-download --workers 1 --per-sign 30
-      # wipe incomplete cache, re-fetch full competition zip, import ~30 clips/sign
-  python import_gislr.py                           # bulk zip + 60 clips/sign, 1 worker
-  python import_gislr.py --per-file                # legacy per-parquet API (404/429 prone)
-  python import_gislr.py --list                    # just show which signs exist
+  python import_gislr.py --per-sign 30     # fetch ~700 clips (~1GB), import
+  python import_gislr.py                   # 60 clips/sign
+  python import_gislr.py --bulk            # full ~40GB competition zip instead
+  python import_gislr.py --list            # just show which signs exist
 
-If you previously saw hundreds of FileNotFoundError under data/gislr_cache/, the
-cache is incomplete — use --force-download (needs tens of GB free disk).
+Re-running is safe: clips already in data/gislr_cache are reused, and files
+left in the wrong place by older versions of this script are repaired.
 """
 
 from __future__ import annotations
@@ -229,13 +228,55 @@ def _unzip_if_needed(path: Path, remote: str) -> Path | None:
     return _resolve_cached(remote)
 
 
+def _repair_cache() -> None:
+    """Fix layouts left by older versions of this script.
+
+    Older code passed path=<cache>/train_landmark_files/<id> to the Kaggle API,
+    which appends the full remote path, so files landed at
+    train_landmark_files/<id>/train_landmark_files/<id>/<clip>.parquet, and some
+    stayed wrapped as <clip>.parquet.zip. Extract those and move every parquet
+    to its canonical CACHE/train_landmark_files/<id>/<clip>.parquet location.
+    """
+    root = CACHE / "train_landmark_files"
+    if not root.is_dir():
+        return
+    extracted = moved = 0
+    for zpath in list(root.rglob("*.parquet.zip")):
+        try:
+            with zipfile.ZipFile(zpath) as z:
+                z.extractall(zpath.parent)
+            zpath.unlink()
+            extracted += 1
+        except zipfile.BadZipFile:
+            print(f"  removing corrupt {zpath.relative_to(CACHE)}")
+            zpath.unlink()
+    for pq in list(root.rglob("*.parquet")):
+        rel = pq.relative_to(root).parts
+        if len(rel) == 2:
+            continue  # already <id>/<clip>.parquet
+        dest = root / rel[-2] / rel[-1]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            pq.unlink()
+        else:
+            pq.rename(dest)
+        moved += 1
+    # Drop the now-empty doubled directories.
+    for d in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    if extracted or moved:
+        print(f"Repaired cache: extracted {extracted} zips, relocated {moved} parquets")
+
+
 def _download_file(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path:
-    """Download one competition file into the cache (skips if already there)."""
+    """Download one competition file into CACHE/<remote> (skips if already there)."""
     found = _resolve_cached(remote)
     if found:
         return found
-    dest_parent = (CACHE / remote).parent
-    dest_parent.mkdir(parents=True, exist_ok=True)
+    CACHE.mkdir(parents=True, exist_ok=True)
     last_exc: BaseException | None = None
     for attempt in range(attempts):
         try:
@@ -243,10 +284,12 @@ def _download_file(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path
                 found = _resolve_cached(remote)
                 if found:
                     return found
+                # The API writes to <path>/<remote>, so path must be the cache
+                # root — passing the file's parent dir doubles the subpath.
                 api.competition_download_file(
                     COMPETITION,
                     remote,
-                    path=str(dest_parent),
+                    path=str(CACHE),
                     quiet=True,
                     unzip=True,
                 )
@@ -261,11 +304,7 @@ def _download_file(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path
             last_exc = exc
             if _is_not_found(exc):
                 raise FileNotFoundError(
-                    f"404 for '{remote}' via competition_download_file. "
-                    "Nested train_landmark_files/... paths are not served "
-                    "per-file on Kaggle. Use the default bulk zip instead:\n"
-                    "  python import_gislr.py --workers 1 --per-sign 30\n"
-                    "(do not pass --per-file)"
+                    f"404 for '{remote}' via competition_download_file: {exc}"
                 ) from exc
             if attempt + 1 >= attempts or not _is_retryable(exc):
                 raise
@@ -488,17 +527,12 @@ def _clear_prior_gislr_samples() -> None:
         print(f"Cleared {removed} prior gislr_*.npy samples before re-import")
 
 
-def _download(api, remote: str, *, per_file: bool) -> Path:
-    """Resolve a competition file from bulk cache, else per-file download."""
+def _cached(remote: str) -> Path:
+    """Path of a competition file that should already be in the cache."""
     found = _resolve_cached(remote)
-    if found:
-        return found
-    if not per_file:
-        raise FileNotFoundError(
-            f"missing '{remote}' under {CACHE} after bulk download "
-            f"(tried cache roots and rglob by basename)"
-        )
-    return _download_file(api, remote)
+    if found is None:
+        raise FileNotFoundError(f"'{remote}' not in {CACHE} (download failed earlier)")
+    return found
 
 
 def _frame_vectors(parquet: Path) -> list[np.ndarray]:
@@ -546,8 +580,8 @@ def _mirror(window: list[np.ndarray]) -> list[np.ndarray]:
     return out
 
 
-def _process(api, row, *, per_file: bool) -> tuple[str, list[np.ndarray]]:
-    path = _download(api, row.path, per_file=per_file)
+def _process(row) -> tuple[str, list[np.ndarray]]:
+    path = _cached(row.path)
     feats = []
     for w in _windows(_frame_vectors(path)):
         feats.append(window_features(w))
@@ -568,6 +602,78 @@ def _format_skip(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _pick_clips(meta: pd.DataFrame, per_sign: int) -> list:
+    """Choose up to per_sign clips per mapped sign, spread across signers."""
+    picks = []
+    for sign in SIGN_MAP:
+        rows = meta[meta["sign"] == sign]
+        if rows.empty:
+            continue
+        rows = rows.sample(frac=1, random_state=0).groupby("participant_id").head(
+            max(1, per_sign // max(1, rows["participant_id"].nunique()) + 1)
+        )
+        picks.extend(rows.head(per_sign).itertuples())
+    return picks
+
+
+def _fetch_missing(api, picks: list) -> None:
+    """Targeted mode: download only the selected parquets not already cached."""
+    found, total, missing = _pick_coverage([p.path for p in picks])
+    print(f"Selected-clip cache coverage: {found}/{total}")
+    if not missing:
+        return
+    print(f"Downloading {len(missing)} missing parquets (one at a time) ...")
+    failed = 0
+    for i, remote in enumerate(missing, 1):
+        try:
+            _download_file(api, remote)
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"  could not fetch {remote}: {_format_skip(exc)}")
+        if i % 25 == 0 or i == len(missing):
+            print(f"  {i}/{len(missing)} fetched ({failed} failed)")
+
+
+class _LocalZip:
+    """A competition zip you downloaded yourself; extracts only what is asked for."""
+
+    def __init__(self, path: Path):
+        if not path.is_file():
+            raise SystemExit(f"--zip file not found: {path}")
+        try:
+            self.zf = zipfile.ZipFile(path)
+        except zipfile.BadZipFile as exc:
+            raise SystemExit(
+                f"{path} is not a complete zip (still downloading?): {exc}"
+            ) from exc
+        # Map competition-relative path -> member name, tolerating a wrapper
+        # folder such as asl-signs/train_landmark_files/...
+        self.members: dict[str, str] = {}
+        for name in self.zf.namelist():
+            for anchor in ("train_landmark_files/", "train.csv"):
+                i = name.find(anchor)
+                if i != -1:
+                    self.members[name[i:]] = name
+                    break
+
+    def extract(self, remote: str) -> Path | None:
+        member = self.members.get(remote)
+        if member is None:
+            return None
+        dest = CACHE / remote
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with self.zf.open(member) as src, open(dest, "wb") as out:
+            shutil.copyfileobj(src, out)
+        return dest
+
+    def extract_missing(self, remotes: list[str]) -> None:
+        todo = [r for r in remotes if not _resolve_cached(r)]
+        print(f"Extracting {len(todo)} parquets from {self.zf.filename} ...")
+        absent = [r for r in todo if self.extract(r) is None]
+        if absent:
+            print(f"  {len(absent)} not in the zip, e.g. {absent[:3]}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--per-sign", type=int, default=60, help="clips per sign to convert")
@@ -575,42 +681,55 @@ def main() -> None:
         "--workers",
         type=int,
         default=1,
-        help="parallel clip workers (default 1; keep low to avoid 429s)",
+        help="parallel conversion workers (downloads are always sequential)",
+    )
+    ap.add_argument(
+        "--bulk",
+        action="store_true",
+        help="download the full ~40GB competition zip instead of only the "
+        "selected parquets",
+    )
+    ap.add_argument(
+        "--zip",
+        type=Path,
+        help="use a competition zip you already downloaded (e.g. "
+        "~/Downloads/asl-signs.zip); extracts only the selected clips",
     )
     ap.add_argument(
         "--force-download",
         action="store_true",
-        help="wipe data/gislr_cache and re-download/extract ALL competition zips",
+        help="wipe data/gislr_cache first and re-download everything needed",
     )
     ap.add_argument(
         "--per-file",
         action="store_true",
-        help="download each parquet via the API (rate-limit prone); "
-        "default is bulk competition zip(s)",
+        help=argparse.SUPPRESS,  # old flag; targeted per-file is now the default
     )
     ap.add_argument("--list", action="store_true", help="list available signs and exit")
     args = ap.parse_args()
     if args.workers < 1:
         raise SystemExit("--workers must be >= 1")
 
-    api = _api()
+    local_zip = _LocalZip(args.zip.expanduser()) if args.zip else None
+    api = None if local_zip else _api()
 
-    if args.per_file:
-        print(
-            "WARNING: --per-file mode uses competition_download_file per parquet; "
-            "nested paths often 404. Prefer default bulk zip (omit --per-file)."
-        )
-        print("Downloading train.csv (per-file mode) ...")
-        meta = pd.read_csv(_download_file(api, "train.csv"))
-    else:
-        print("Download mode: bulk competition zip(s) (competition_download_files)")
+    if local_zip:
+        print(f"Download mode: local zip {args.zip}")
+        _repair_cache()
+        if not _resolve_cached("train.csv") and not local_zip.extract("train.csv"):
+            raise SystemExit(f"train.csv not found in {args.zip}")
+    elif args.bulk:
+        print("Download mode: full competition zip (competition_download_files)")
         _download_bulk(api, force=args.force_download)
-        train_csv = _resolve_cached("train.csv")
-        if train_csv is None:
-            print("train.csv missing after bulk download; fetching just that file ...")
-            train_csv = _download_file(api, "train.csv")
-        print(f"Reading {train_csv} ...")
-        meta = pd.read_csv(train_csv)
+    else:
+        print("Download mode: targeted (only the selected parquets)")
+        if args.force_download:
+            _wipe_cache()
+        _repair_cache()
+
+    train_csv = _resolve_cached("train.csv") or _download_file(api, "train.csv")
+    print(f"Reading {train_csv} ...")
+    meta = pd.read_csv(train_csv)
 
     available = set(meta["sign"].unique())
     if args.list:
@@ -621,51 +740,23 @@ def main() -> None:
         print(f"Not in dataset, skipping: {', '.join(missing)}")
 
     random.seed(0)
-    picks = []
-    for sign in SIGN_MAP:
-        rows = meta[meta["sign"] == sign]
-        if rows.empty:
-            continue
-        # spread picks across different signers so the model generalizes
-        rows = rows.sample(frac=1, random_state=0).groupby("participant_id").head(
-            max(1, args.per_sign // max(1, rows["participant_id"].nunique()) + 1)
-        )
-        picks.extend(rows.head(args.per_sign).itertuples())
+    picks = _pick_clips(meta, args.per_sign)
 
-    if not args.per_file:
-        required = [p.path for p in picks]
-        found, total_req, missing_paths = _pick_coverage(required)
+    if local_zip:
+        local_zip.extract_missing([p.path for p in picks])
+    elif args.bulk:
+        found, total_req, missing_paths = _pick_coverage([p.path for p in picks])
         print(f"Selected-clip cache coverage: {found}/{total_req}")
         if total_req and found < int(MIN_PICK_COVERAGE * total_req):
-            print(
-                f"Only {found}/{total_req} selected parquets on disk "
-                f"({len(missing_paths)} missing) — forcing full re-download."
+            raise SystemExit(
+                f"Bulk cache is missing {len(missing_paths)}/{total_req} selected "
+                "parquets. Re-run with --bulk --force-download, or drop --bulk "
+                f"to fetch just these files.\nExample missing: {missing_paths[:5]}"
             )
-            _download_bulk(api, force=True, required=required)
-            # Reload train.csv after wipe+refetch
-            train_csv = _resolve_cached("train.csv")
-            if train_csv is None:
-                raise SystemExit("train.csv missing after forced re-download")
-            meta = pd.read_csv(train_csv)
-            picks = []
-            for sign in SIGN_MAP:
-                rows = meta[meta["sign"] == sign]
-                if rows.empty:
-                    continue
-                rows = rows.sample(frac=1, random_state=0).groupby("participant_id").head(
-                    max(1, args.per_sign // max(1, rows["participant_id"].nunique()) + 1)
-                )
-                picks.extend(rows.head(args.per_sign).itertuples())
-            found, total_req, missing_paths = _pick_coverage([p.path for p in picks])
-            print(f"Selected-clip cache coverage after re-download: {found}/{total_req}")
-            if total_req and found < int(MIN_PICK_COVERAGE * total_req):
-                raise SystemExit(
-                    f"Still missing {len(missing_paths)}/{total_req} selected parquets "
-                    f"after --force-download. Free ~50+ GB disk and retry.\n"
-                    f"Example missing: {missing_paths[:5]}"
-                )
+    else:
+        _fetch_missing(api, picks)
 
-    mode = "per-file API" if args.per_file else "bulk zip cache"
+    mode = "local zip" if local_zip else "full zip cache" if args.bulk else "targeted cache"
     print(
         f"Converting {len(picks)} clips for "
         f"{len({p.sign for p in picks})} signs "
@@ -676,35 +767,32 @@ def main() -> None:
     done = 0
     skipped = 0
 
-    def _handle_result(label: str, feats: list[np.ndarray]) -> None:
-        _save_feats(counts, label, feats)
+    def _report(label_feats=None, exc=None) -> None:
+        nonlocal done, skipped
+        done += 1
+        if exc is not None:
+            skipped += 1
+            print(f"  skipped one clip: {_format_skip(exc)}")
+        else:
+            _save_feats(counts, *label_feats)
+        if done % 25 == 0 or done == len(picks):
+            print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
 
+    # Everything is on disk by now, so conversion never hits the network.
     if args.workers == 1:
         for row in picks:
-            done += 1
             try:
-                label, feats = _process(api, row, per_file=args.per_file)
-                _handle_result(label, feats)
+                _report(_process(row))
             except Exception as exc:  # noqa: BLE001
-                skipped += 1
-                print(f"  skipped one clip: {_format_skip(exc)}")
-            if done % 25 == 0 or done == len(picks):
-                print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
+                _report(exc=exc)
     else:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = [
-                pool.submit(_process, api, r, per_file=args.per_file) for r in picks
-            ]
+            futures = [pool.submit(_process, r) for r in picks]
             for fut in as_completed(futures):
-                done += 1
                 try:
-                    label, feats = fut.result()
-                    _handle_result(label, feats)
+                    _report(fut.result())
                 except Exception as exc:  # noqa: BLE001
-                    skipped += 1
-                    print(f"  skipped one clip: {_format_skip(exc)}")
-                if done % 25 == 0 or done == len(picks):
-                    print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
+                    _report(exc=exc)
 
     total = sum(counts.values())
     print("\nImported samples per label:")
@@ -717,14 +805,12 @@ def main() -> None:
     print(f"Labels with samples: {len(counts)}")
 
     # Full mapped set is 24 signs; a few may be absent from GISLR. Expect ~20+.
-    if total == 0 or (not args.per_file and len(counts) < 15):
+    if total == 0 or len(counts) < 15:
         print(
             "\nERROR: import incomplete "
             f"(samples={total}, labels={len(counts)}).\n"
-            "Your data/gislr_cache was likely truncated (full set is ~94k parquets / tens of GB).\n"
-            "Free ~50+ GB disk, then:\n"
-            "  python import_gislr.py --force-download --workers 1 --per-sign 30\n"
-            "Avoid --per-file (nested paths 404 / rate-limit).",
+            "Re-run to retry failed downloads, or use --force-download to start "
+            "from an empty cache.",
             file=sys.stderr,
         )
         raise SystemExit(1)

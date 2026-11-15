@@ -94,17 +94,81 @@ def _draw_panel(
     )
 
 
-def _speak_async(text: str, enabled: bool) -> None:
-    if not enabled or not text:
-        return
+class _Conversation:
+    """Captions + dialogue history, updated from background threads.
 
-    def _run() -> None:
+    Translation, speech and reply recording each take a second or more, so
+    they run off the video loop; the loop just reads the latest captions.
+    """
+
+    def __init__(self, voice_enabled: bool) -> None:
+        self.voice_enabled = voice_enabled
+        self.lock = threading.Lock()
+        self.history: List[Tuple[str, str]] = []
+        self.signer = ""
+        self.reply = ""
+        self.listening = False
+        self._generation = 0  # bumped on clear so stale results are dropped
+
+    def captions(self) -> Tuple[str, str]:
+        with self.lock:
+            return self.signer, self.reply
+
+    def clear(self) -> None:
+        with self.lock:
+            self.history.clear()
+            self.signer = ""
+            self.reply = "Listening..." if self.listening else ""
+            self._generation += 1
+
+    def on_sentence(self, tokens: List[str]) -> None:
+        with self.lock:
+            gen = self._generation
+            history = list(self.history)
+            self.signer = "Translating: " + " ".join(tokens)
+        threading.Thread(
+            target=self._translate, args=(tokens, history, gen), daemon=True
+        ).start()
+
+    def _translate(self, tokens: List[str], history, gen: int) -> None:
+        english = translate(tokens, conversation=history)
+        with self.lock:
+            if gen != self._generation:
+                return
+            self.signer = english
+            self.history.append(("signer", english))
+        print(f"Signer: {english}")
+        if self.voice_enabled and english:
+            try:
+                speak(english)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[app] speak failed: {exc}")
+
+    def record_reply(self) -> None:
+        with self.lock:
+            if self.listening:
+                return
+            self.listening = True
+            self.reply = f"Listening... ({config.RECORD_SECONDS}s)"
+            gen = self._generation
+        print("[app] recording reply…")
+        threading.Thread(target=self._record, args=(gen,), daemon=True).start()
+
+    def _record(self, gen: int) -> None:
         try:
-            speak(text)
+            text = transcribe(seconds=config.RECORD_SECONDS)
         except Exception as exc:  # noqa: BLE001
-            print(f"[app] speak failed: {exc}")
-
-    threading.Thread(target=_run, daemon=True).start()
+            print(f"[app] transcription failed: {exc}")
+            text = ""
+        with self.lock:
+            self.listening = False
+            if gen != self._generation:
+                self.reply = ""
+                return
+            self.reply = text or "(no speech heard)"
+            if text:
+                self.history.append(("reply", text))
+        print(f"Reply: {text}")
 
 
 def run(video: Optional[str] = None, no_voice: bool = False) -> None:
@@ -122,10 +186,7 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
         source = WebcamSource()
     source.open()
 
-    conversation: List[Tuple[str, str]] = []
-    signer_caption = ""
-    reply_caption = ""
-    voice_enabled = not no_voice
+    convo = _Conversation(voice_enabled=not no_voice)
 
     print("Hermes in-person mode")
     print("Q quit | R record reply (5s) | C clear captions")
@@ -144,12 +205,9 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
             draw_landmarks(frame, result)
 
             if finished is not None:
-                english = translate(finished.tokens, conversation=conversation)
-                signer_caption = english
-                conversation.append(("signer", english))
-                print(f"Signer: {english}")
-                _speak_async(english, voice_enabled)
+                convo.on_sentence(finished.tokens)
 
+            signer_caption, reply_caption = convo.captions()
             _draw_panel(
                 frame,
                 recognizer.current_label,
@@ -167,21 +225,11 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
             if key in (ord("q"), ord("Q")):
                 break
             if key in (ord("c"), ord("C")):
-                signer_caption = ""
-                reply_caption = ""
-                conversation.clear()
+                convo.clear()
                 recognizer.clear_tokens()
                 print("[app] captions cleared")
             if key in (ord("r"), ord("R")):
-                try:
-                    print("[app] recording reply…")
-                    reply = transcribe(seconds=config.RECORD_SECONDS)
-                    reply_caption = reply
-                    if reply:
-                        conversation.append(("reply", reply))
-                    print(f"Reply: {reply}")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[app] transcription failed: {exc}")
+                convo.record_reply()
     finally:
         try:
             recognizer.close()

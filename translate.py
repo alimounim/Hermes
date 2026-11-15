@@ -102,30 +102,57 @@ def translate(
     parts.append("English sentence:")
     user_prompt = "\n\n".join(parts)
 
-    try:
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.3,
-                max_output_tokens=80,
+    client = _client(api_key)
+    # Try the configured model, then faster fallbacks. Busy models (503/504)
+    # fail fast instead of stalling the conversation.
+    models = list(dict.fromkeys([config.GEMINI_MODEL, *config.GEMINI_FALLBACK_MODELS]))
+    for model in models:
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.3,
+                    # Headroom for models that spend output tokens on thinking.
+                    max_output_tokens=512,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[translate] {model} failed: {str(exc)[:120]}")
+            continue
+        text = _clean(resp.text or "")
+        if text:
+            print(f"[translate] Gemini ({model}): {text!r}")
+            return text
+        print(f"[translate] {model} returned empty text")
+    print(f"[translate] all Gemini models failed — using token fallback: {fallback!r}")
+    return fallback
+
+
+_CLIENT: genai.Client | None = None
+
+
+def _client(api_key: str) -> genai.Client:
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=config.GEMINI_TIMEOUT_MS,
+                retry_options=types.HttpRetryOptions(attempts=1),
             ),
         )
-        text = (resp.text or "").strip()
-        # Strip accidental quotes / labels
-        if text.startswith(("\"", "'")) and text.endswith(("\"", "'")) and len(text) > 1:
-            text = text[1:-1].strip()
-        if "\n" in text:
-            text = text.splitlines()[0].strip()
-        if text.lower().startswith("english:"):
-            text = text.split(":", 1)[1].strip()
-        if not text:
-            print(f"[translate] empty Gemini response — fallback: {fallback!r}")
-            return fallback
-        print(f"[translate] Gemini ({config.GEMINI_MODEL}): {text!r}")
-        return text
-    except Exception as exc:  # noqa: BLE001
-        print(f"[translate] Gemini API failed ({exc}) — using token fallback: {fallback!r}")
-        return fallback
+    return _CLIENT
+
+
+def _clean(text: str) -> str:
+    """Strip accidental quotes / labels / extra lines from a model reply."""
+    text = text.strip()
+    if "\n" in text:
+        text = text.splitlines()[0].strip()
+    if text.lower().startswith("english:"):
+        text = text.split(":", 1)[1].strip()
+    if len(text) > 1 and text[0] in "\"'" and text[-1] in "\"'":
+        text = text[1:-1].strip()
+    return text

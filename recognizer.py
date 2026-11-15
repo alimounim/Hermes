@@ -76,7 +76,21 @@ class SignRecognizer:
         emitted: Optional[str] = None
         finished: Optional[RecognitionEvent] = None
 
-        if feats is not None:
+        hands_now = bool(getattr(result, "hand_landmarks", None))
+        if feats is not None and not feats.any():
+            # No hands for the whole window: that is rest, not a sign. The
+            # model never saw all-zero input and would guess (e.g. WHERE).
+            self.current_label = "_none"
+            self.current_confidence = 1.0
+            self._streak_label = None
+            self._streak_count = 0
+            self._last_emitted = "_none"
+        elif feats is not None and not hands_now:
+            # Hand dropped out this frame: hold off rather than classify a
+            # window that ends in zeros.
+            self._streak_label = None
+            self._streak_count = 0
+        elif feats is not None:
             proba = self._pipeline.predict_proba([feats])[0]
             best_i = int(np.argmax(proba))
             label = str(self._encoder.classes_[best_i])

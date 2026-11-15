@@ -19,7 +19,7 @@ cp .env.example .env
 | Variable | Required for | Notes |
 |---|---|---|
 | `GEMINI_API_KEY` | Translation | Google AI Studio / Gemini key (`GOOGLE_API_KEY` also accepted) |
-| `GEMINI_MODEL` | Translation | Default `gemini-3.8-flash` |
+| `GEMINI_MODEL` | Translation | Default `gemini-3.5-flash-lite` (fast); falls back to `GEMINI_FALLBACK_MODELS` (default `gemini-3.8-flash`) |
 | `ELEVENLABS_API_KEY` | Speak + reply captions | ElevenLabs key |
 | `ELEVENLABS_VOICE_ID` | Speak | Default voice id in `.env.example` |
 
