@@ -1,18 +1,24 @@
 # Hermes
 
-Sign-language translator for HackUTA 2026. Hermes watches a signer through a camera, recognizes signs, turns them into natural English with Google Gemini, and speaks them with ElevenLabs. When a hearing person replies, Hermes transcribes their speech and shows captions.
+Sign-language translator built at HackUTA 2026. Hermes watches a signer through a laptop camera, recognizes ASL signs, turns them into natural English with Google Gemini, and speaks them with ElevenLabs. When the hearing person replies, Hermes transcribes their speech and shows it as a caption, so the conversation goes both ways.
 
-**Phase 1 (this PR):** core engine + in-person mode. Call mode (`agent.py`) comes in Phase 2.
+It is built for short, practical exchanges at a pharmacy, clinic or front desk: about 50 everyday signs such as HELLO, PAIN, HEAD, SICK, BATHROOM, WATER, HUNGRY, WAIT and THANK-YOU.
 
-## Setup
+## Quick start
+
+Needs Python 3.11–3.13, a webcam, and API keys for Gemini and ElevenLabs. The trained sign model is included, so no dataset download is needed to run it.
 
 ```bash
-python3.11 -m venv .venv
+git clone https://github.com/alimounim/Hermes.git
+cd Hermes
+python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env and add your keys
+cp .env.example .env        # then add your keys
+python app.py
 ```
+
+On macOS, allow camera and microphone access for your terminal app when asked. The MediaPipe hand and body-pose models (about 13 MB) download into `models/` on first run.
 
 ### Environment variables
 
@@ -23,10 +29,6 @@ cp .env.example .env
 | `ELEVENLABS_API_KEY` | Speak + reply captions | ElevenLabs key |
 | `ELEVENLABS_VOICE_ID` | Speak | Default voice id in `.env.example` |
 
-The MediaPipe hand and body-pose `.task` models download automatically into `models/` on first run.
-
-> Phase 1 no longer uses xAI / Grok. You can remove any old `XAI_API_KEY` from `.env`.
-
 ## How signs are recognized
 
 One sign at a time: **raise your hands, make the sign, lower your hands.** Hermes classifies the whole movement once your hands drop below the dotted "rest line" (about elbow height) or leave the picture. It looks at hand shape, where the hands are relative to your face and shoulders, and how they move.
@@ -35,7 +37,9 @@ One sign at a time: **raise your hands, make the sign, lower your hands.** Herme
 - Not confident, or not a sign it knows → it shows "Not sure" with its two best guesses and adds nothing. Sign it again.
 - 3 seconds with no new sign → the sentence is translated (Gemini) and spoken (ElevenLabs).
 
-## Build the model
+## Rebuild the model (optional)
+
+Only needed to change the vocabulary or retrain. The included `models/sign_clf.joblib` was trained this way.
 
 1. Download the Kaggle competition data ([asl-signs](https://www.kaggle.com/competitions/asl-signs)) and unpack it to `data/asl-signs/`.
 2. Extract the landmarks for the Hermes signs (seconds):
