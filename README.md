@@ -4,6 +4,18 @@ Sign-language translator built at HackUTA 2026. Hermes watches a signer through 
 
 It is built for short, practical exchanges at a pharmacy, clinic or front desk: about 50 everyday signs such as HELLO, PAIN, HEAD, SICK, BATHROOM, WATER, HUNGRY, WAIT and THANK-YOU.
 
+## Try it now: [signtovoice.us](https://signtovoice.us)
+
+No install needed. From an iPhone, iPad or Mac:
+
+1. Open **[signtovoice.us](https://signtovoice.us)** and tap **FaceTime Hermes**, or start a FaceTime **Video** call to **+1 (702) 510-9706**.
+2. Sign one word at a time (raise your hands, sign, lower them), then pause for 3 seconds. Hermes says your sentence out loud.
+3. When someone speaks back, their words appear under **REPLY** on Hermes' video.
+
+Don't know ASL? The **[sign dictionary](https://signtovoice.us/dictionary.html)** has a video for each of the 49 signs and shows which ones Hermes recognizes most reliably. Good first tries: HELLO, BATHROOM → WHERE, THIRSTY → WATER → PLEASE.
+
+The line takes one call at a time and is online during HackUTA 2026 demos. If it doesn't answer, try again in a few minutes.
+
 ## Quick start
 
 Needs Python 3.11–3.13, a webcam, and API keys for Gemini and ElevenLabs. The trained sign model is included, so no dataset download is needed to run it.
