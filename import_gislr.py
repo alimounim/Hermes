@@ -18,15 +18,19 @@ Setup (once):
      (same Python that will run this script: python -m pip install ...)
 
 Run (from ~/Hermes):
-  python import_gislr.py                 # default: 60 clips per sign
-  python import_gislr.py --per-sign 100  # more data, slower download
-  python import_gislr.py --list          # just show which signs exist
+  python import_gislr.py                           # default: 60 clips/sign, 2 workers
+  python import_gislr.py --workers 1 --per-sign 30 # gentler on Kaggle rate limits
+  python import_gislr.py --per-sign 100            # more data, slower download
+  python import_gislr.py --list                    # just show which signs exist
 """
 
 from __future__ import annotations
 
 import argparse
 import random
+import sys
+import threading
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -85,6 +89,10 @@ MAX_WINDOWS_PER_CLIP = 4
 # Rescale x so hand shapes have the same proportions as live camera landmarks.
 ASPECT_FIX = (config.FRAME_HEIGHT / config.FRAME_WIDTH) / (4 / 3)
 
+# Serialize Kaggle HTTP downloads — parallel workers still hit 429 hard.
+_DOWNLOAD_LOCK = threading.Lock()
+_DOWNLOAD_ATTEMPTS = 8
+
 
 def _api():
     """Return an authenticated Kaggle API client.
@@ -128,21 +136,75 @@ def _api():
     return api
 
 
-def _download(api, remote: str) -> Path:
-    """Download one competition file into the cache (skips if already there)."""
+def _is_retryable(exc: BaseException) -> bool:
+    """True for rate limits / transient network failures worth backing off on."""
+    msg = str(exc).lower()
+    name = type(exc).__name__.lower()
+    markers = (
+        "429",
+        "too many requests",
+        "rate limit",
+        "ratelimit",
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily unavailable",
+        "name or service not known",
+        "nodename nor servname",
+        "temporary failure in name resolution",
+        "failed to resolve",
+        "dns",
+        "reset by peer",
+        "broken pipe",
+        "503",
+        "502",
+        "504",
+        "ssl",
+    )
+    return any(m in msg or m in name for m in markers)
+
+
+def _download(api, remote: str, attempts: int = _DOWNLOAD_ATTEMPTS) -> Path:
+    """Download one competition file into the cache (skips if already there).
+
+    Retries with exponential backoff on 429 / DNS / connection errors. Downloads
+    are serialized across threads so --workers mostly parallelizes parquet→npy
+    conversion of already-cached clips, not hammering Kaggle.
+    """
     local = CACHE / remote
     if local.exists() and local.stat().st_size > 0:
         return local
     local.parent.mkdir(parents=True, exist_ok=True)
-    api.competition_download_file(COMPETITION, remote, path=str(local.parent), quiet=True)
-    zipped = local.parent / (local.name + ".zip")
-    if zipped.exists():
-        with zipfile.ZipFile(zipped) as z:
-            z.extractall(local.parent)
-        zipped.unlink()
-    if not local.exists():
-        raise FileNotFoundError(remote)
-    return local
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            with _DOWNLOAD_LOCK:
+                # Another worker may have finished while we waited for the lock.
+                if local.exists() and local.stat().st_size > 0:
+                    return local
+                api.competition_download_file(
+                    COMPETITION, remote, path=str(local.parent), quiet=True
+                )
+                time.sleep(0.35)  # courtesy gap between API calls
+            zipped = local.parent / (local.name + ".zip")
+            if zipped.exists():
+                with zipfile.ZipFile(zipped) as z:
+                    z.extractall(local.parent)
+                zipped.unlink()
+            if not local.exists():
+                raise FileNotFoundError(remote)
+            return local
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt + 1 >= attempts or not _is_retryable(exc):
+                raise
+            delay = min(60.0, (2**attempt) + random.random())
+            print(
+                f"  retry {attempt + 1}/{attempts} {remote}: {exc} "
+                f"(sleep {delay:.1f}s)"
+            )
+            time.sleep(delay)
+    raise RuntimeError(f"download failed: {remote}") from last_exc
 
 
 def _frame_vectors(parquet: Path) -> list[np.ndarray]:
@@ -199,12 +261,28 @@ def _process(api, row) -> tuple[str, list[np.ndarray]]:
     return SIGN_MAP[row.sign], feats
 
 
+def _save_feats(counts: dict[str, int], label: str, feats: list[np.ndarray]) -> None:
+    out_dir = config.SAMPLES_DIR / label
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for f in feats:
+        n = counts.get(label, 0)
+        np.save(out_dir / f"gislr_{n:05d}.npy", f)
+        counts[label] = n + 1
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--per-sign", type=int, default=60, help="clips per sign to download")
-    ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help="parallel clip workers (default 2; use 1 if you hit 429 rate limits)",
+    )
     ap.add_argument("--list", action="store_true", help="list available signs and exit")
     args = ap.parse_args()
+    if args.workers < 1:
+        raise SystemExit("--workers must be >= 1")
 
     api = _api()
     print("Downloading train.csv ...")
@@ -230,31 +308,63 @@ def main() -> None:
         )
         picks.extend(rows.head(args.per_sign).itertuples())
 
-    print(f"Downloading and converting {len(picks)} clips for "
-          f"{len({p.sign for p in picks})} signs ...")
+    print(
+        f"Downloading and converting {len(picks)} clips for "
+        f"{len({p.sign for p in picks})} signs "
+        f"(workers={args.workers}, downloads serialized) ..."
+    )
+    # Note: competition_download_files() pulls the entire ~40 GB competition
+    # archive, so we keep per-file download + retry instead of a bulk zip.
     counts: dict[str, int] = {}
     done = 0
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(_process, api, r) for r in picks]
-        for fut in as_completed(futures):
+    skipped = 0
+
+    def _handle_result(label: str, feats: list[np.ndarray]) -> None:
+        _save_feats(counts, label, feats)
+
+    if args.workers == 1:
+        for row in picks:
             done += 1
             try:
-                label, feats = fut.result()
+                label, feats = _process(api, row)
+                _handle_result(label, feats)
             except Exception as exc:  # noqa: BLE001
+                skipped += 1
                 print(f"  skipped one clip: {exc}")
-                continue
-            out_dir = config.SAMPLES_DIR / label
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for f in feats:
-                n = counts.get(label, 0)
-                np.save(out_dir / f"gislr_{n:05d}.npy", f)
-                counts[label] = n + 1
-            if done % 50 == 0 or done == len(picks):
-                print(f"  {done}/{len(picks)} clips")
+            if done % 25 == 0 or done == len(picks):
+                print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
+    else:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = [pool.submit(_process, api, r) for r in picks]
+            for fut in as_completed(futures):
+                done += 1
+                try:
+                    label, feats = fut.result()
+                    _handle_result(label, feats)
+                except Exception as exc:  # noqa: BLE001
+                    skipped += 1
+                    print(f"  skipped one clip: {exc}")
+                if done % 25 == 0 or done == len(picks):
+                    print(f"  {done}/{len(picks)} clips ({sum(counts.values())} samples)")
 
+    total = sum(counts.values())
     print("\nImported samples per label:")
-    for label, n in sorted(counts.items()):
-        print(f"  {label:<10} {n}")
+    if not counts:
+        print("  (none)")
+    else:
+        for label, n in sorted(counts.items()):
+            print(f"  {label:<10} {n}")
+    print(f"Total samples: {total}  (skipped clips: {skipped})")
+
+    if total == 0:
+        print(
+            "\nERROR: imported 0 samples. Likely Kaggle 429 rate limit or network/DNS.\n"
+            "Wait a few minutes, then retry gently:\n"
+            "  python import_gislr.py --workers 1 --per-sign 30",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     print("\nNext: record extra '_none' samples, then run: python train.py")
 
 
