@@ -60,24 +60,35 @@ GREETING = (
     "on my video on FaceTime. Watch that caption board, not Apple's captions."
 )
 
-# Full-HD portrait publish; layout is fractional so it scales cleanly.
-# FaceTime cover-crops differently on phone (sides) vs Mac (top/bottom) —
-# keep the conversation stack inside the shared center safe zone.
-BOARD_W = 1080
-BOARD_H = 1920
-BOARD_FPS = 8
+# FaceTime fit/contain: a locked 9:16 board pillarboxes into a thin Mac strip
+# (facetime-blurry-retest.png) and looks soft when upscaled. Default publish is
+# Full-HD landscape; we flip to portrait when the remote FaceTime camera is
+# portrait so iPhone fills the screen too.
+BOARD_LANDSCAPE = (1920, 1080)
+BOARD_PORTRAIT = (1080, 1920)
+BOARD_W, BOARD_H = BOARD_LANDSCAPE  # default; CaptionBoard may swap at runtime
+BOARD_FPS = 12
+# Encode budget for sharp glyphs (LiveKit defaults crush text when unset).
+BOARD_MAX_BITRATE = 6_000_000
 # Render at 2× then LANCZOS-downsample for retina-sharp glyphs on all devices.
 RENDER_SCALE = 2
 
-# Title-safe fractions (of published frame). Tuned against iPhone 390×844 and
-# Mac 1280×720 cover-crop simulations in scripts/preview_caption_board.py.
-SAFE_X_FRAC = 0.18
-SAFE_TOP_FRAC = 0.10
-SAFE_BOTTOM_FRAC = 0.12
-# Cross-device overlap: Mac landscape cover of 9:16 keeps only the center ~32%
-# of height — brand + YOU + REPLY must all live in this band.
-STACK_TOP_FRAC = 0.36
-STACK_BOTTOM_FRAC = 0.64
+# Title-safe fractions (of published frame). Tuned for FaceTime fit + mild
+# cover crop in scripts/preview_caption_board.py.
+SAFE_X_FRAC_LANDSCAPE = 0.05
+SAFE_X_FRAC_PORTRAIT = 0.10
+SAFE_TOP_FRAC = 0.06
+SAFE_BOTTOM_FRAC = 0.07
+# Landscape: brand + side-by-side panels. Portrait: stacked YOU then REPLY.
+STACK_TOP_FRAC_LANDSCAPE = 0.08
+STACK_BOTTOM_FRAC_LANDSCAPE = 0.93
+STACK_TOP_FRAC_PORTRAIT = 0.12
+STACK_BOTTOM_FRAC_PORTRAIT = 0.90
+
+# Back-compat aliases for preview script / fractional helpers (landscape default).
+SAFE_X_FRAC = SAFE_X_FRAC_LANDSCAPE
+STACK_TOP_FRAC = STACK_TOP_FRAC_LANDSCAPE
+STACK_BOTTOM_FRAC = STACK_BOTTOM_FRAC_LANDSCAPE
 
 _FONT_DIR = _ROOT / "assets" / "fonts"
 
@@ -155,9 +166,15 @@ def _load_font(name: str, size: int):
         return ImageFont.load_default()
 
 
-def _px(frac: float, axis: str, scale: int = 1) -> int:
-    base = BOARD_W if axis == "x" else BOARD_H
+def _px(frac: float, axis: str, scale: int = 1, *, w: int = BOARD_W, h: int = BOARD_H) -> int:
+    base = w if axis == "x" else h
     return int(round(frac * base * scale))
+
+
+def _sharpen_bgr(bgr: np.ndarray) -> np.ndarray:
+    """Light unsharp mask so H.264 keeps glyph edges under FaceTime re-encode."""
+    blur = cv2.GaussianBlur(bgr, (0, 0), sigmaX=0.8)
+    return cv2.addWeighted(bgr, 1.22, blur, -0.22, 0)
 
 
 def _fill_atmosphere(rgb, w: int, h: int) -> None:
@@ -183,8 +200,8 @@ def _fill_atmosphere(rgb, w: int, h: int) -> None:
 
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
-    cx, cy = w // 2, int(h * STACK_TOP_FRAC) + w // 14
-    rad = w // 3
+    cx, cy = w // 2, int(h * 0.42)
+    rad = min(w, h) // 2
     for i in range(6, 0, -1):
         a = 18 if i == 6 else max(6, 28 - i * 4)
         gdraw.ellipse(
@@ -192,6 +209,21 @@ def _fill_atmosphere(rgb, w: int, h: int) -> None:
             fill=(212, 160, 72, a),
         )
     rgb.alpha_composite(glow)
+
+
+def _fit_letterbox_view(
+    bgr: np.ndarray, view_w: int, view_h: int
+) -> tuple[np.ndarray, int, int, int, int]:
+    """Simulate FaceTime object-fit:contain (black bars). Returns view + pad."""
+    h, w = bgr.shape[:2]
+    scale = min(view_w / w, view_h / h)
+    sw, sh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    resized = cv2.resize(bgr, (sw, sh), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((view_h, view_w, 3), dtype=np.uint8)
+    x0 = max(0, (view_w - sw) // 2)
+    y0 = max(0, (view_h - sh) // 2)
+    canvas[y0 : y0 + sh, x0 : x0 + sw] = resized
+    return canvas, x0, y0, sw, sh
 
 
 def _rounded_rect(
@@ -260,124 +292,132 @@ def render_caption_board(
     signer_text: str,
     reply_text: str,
     tokens: str = "",
+    *,
+    width: int = BOARD_W,
+    height: int = BOARD_H,
 ) -> np.ndarray:
-    """BGR HD portrait board — retina-sharp, device-safe YOU/REPLY stack."""
+    """BGR HD board — landscape YOU|REPLY or portrait stack, retina-sharp."""
     from PIL import Image, ImageDraw
 
+    portrait = height >= width
     s = RENDER_SCALE
-    rw, rh = BOARD_W * s, BOARD_H * s
+    rw, rh = width * s, height * s
     rgb = Image.new("RGBA", (rw, rh), (12, 18, 28, 255))
     _fill_atmosphere(rgb, rw, rh)
     draw = ImageDraw.Draw(rgb)
 
-    # Fractional → pixel layout at render resolution (responsive to BOARD_*).
-    safe_x = _px(SAFE_X_FRAC, "x", s)
+    safe_x_frac = SAFE_X_FRAC_PORTRAIT if portrait else SAFE_X_FRAC_LANDSCAPE
+    stack_top_frac = STACK_TOP_FRAC_PORTRAIT if portrait else STACK_TOP_FRAC_LANDSCAPE
+    stack_bot_frac = STACK_BOTTOM_FRAC_PORTRAIT if portrait else STACK_BOTTOM_FRAC_LANDSCAPE
+
+    safe_x = _px(safe_x_frac, "x", s, w=width, h=height)
+    safe_top = _px(SAFE_TOP_FRAC, "y", s, w=width, h=height)
+    stack_top = _px(stack_top_frac, "y", s, w=width, h=height)
+    stack_bot = _px(stack_bot_frac, "y", s, w=width, h=height)
     content_w = rw - 2 * safe_x
-    stack_top = _px(STACK_TOP_FRAC, "y", s)
-    stack_bot = _px(STACK_BOTTOM_FRAC, "y", s)
-    stack_h = stack_bot - stack_top
-    pad = max(24 * s, content_w // 20)
-    gap = 14 * s
-    radius = 18 * s
+    gap = max(18 * s, content_w // 48)
+    pad = max(28 * s, content_w // 36)
+    radius = 22 * s
 
-    # Type scale from width so glyphs stay proportional if BOARD_* changes.
-    brand = _load_font("NotoSerifDisplay-Bold.ttf", rw * 0.068)
-    tagline = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.024)
-    label = _load_font("NotoSansDisplay-Bold.ttf", rw * 0.028)
-    body = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.036)
-    reply_body = _load_font("NotoSansDisplay-Bold.ttf", rw * 0.044)
-    meta = _load_font("NotoSansDisplay-Regular.ttf", rw * 0.022)
+    # Scale type from the shorter axis so glyphs stay large on either aspect.
+    short = min(rw, rh)
+    brand = _load_font("NotoSerifDisplay-Bold.ttf", short * (0.078 if portrait else 0.085))
+    tagline = _load_font("NotoSansDisplay-Regular.ttf", short * 0.032)
+    label = _load_font("NotoSansDisplay-Bold.ttf", short * 0.038)
+    body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.048 if portrait else 0.055))
+    reply_body = _load_font("NotoSansDisplay-Bold.ttf", short * (0.052 if portrait else 0.060))
+    meta = _load_font("NotoSansDisplay-Regular.ttf", short * 0.030)
 
-    x0 = safe_x
-
-    # Brand + stack share the Mac/phone overlap band (compact, no edge chrome).
-    header_h = int(stack_h * 0.24)
-    you_h = int(stack_h * 0.30)
-    reply_h = stack_h - header_h - you_h - 2 * gap
-    y = stack_top
-
+    y = max(safe_top, stack_top)
     brand_text = "HERMES"
     bw = _text_width(brand, brand_text)
     draw.text(((rw - bw) // 2, y), brand_text, font=brand, fill=(245, 232, 210, 255))
-    y += int(rw * 0.068)
-    tip = "You sign · I speak · replies below"
+    y += int(short * 0.090)
+    tip = "You sign · I speak · REPLY listens"
     tw = _text_width(tagline, tip)
     draw.text(((rw - tw) // 2, y), tip, font=tagline, fill=(168, 196, 188, 255))
-    # Clear gap under tagline so the accent rule does not look like a word underline.
-    y += int(rw * 0.042)
-    rule_w = int(rw * 0.05)
+    y += int(short * 0.048)
+    rule_w = int(rw * 0.04)
     draw.rectangle(
         [rw // 2 - rule_w, y, rw // 2 + rule_w, y + max(3, 3 * s)],
         fill=(212, 160, 72, 220),
     )
-    y = stack_top + header_h
+    y += int(short * 0.032)
 
-    _rounded_rect(
-        draw,
-        (x0, y, x0 + content_w, y + you_h),
-        radius,
-        (16, 36, 40, 220),
-    )
-    draw.text((x0 + pad, y + pad // 3), "YOU", font=label, fill=(120, 210, 170, 255))
-    you_label_w = _text_width(label, "YOU")
-    draw.text(
-        (x0 + pad + you_label_w + 12 * s, y + pad // 3 + 3 * s),
-        "signer",
-        font=meta,
-        fill=(140, 170, 160, 255),
-    )
-    you_lines = _wrap_px(signer_text, body, content_w - 2 * pad, max_lines=2)
-    line_gap = int(rw * 0.040)
-    ty = y + pad // 3 + int(rw * 0.042)
-    for line in you_lines:
-        draw.text((x0 + pad, ty), line, font=body, fill=(245, 248, 246, 255))
-        ty += line_gap
-    if tokens:
-        tok = f"Signs: {tokens}"
-        while _text_width(meta, tok) > content_w - 2 * pad and len(tok) > 8:
-            tok = tok[:-2]
+    panel_top = y
+    panel_bot = stack_bot
+    panel_h = max(1, panel_bot - panel_top)
+
+    def _draw_you(x0: int, top: int, pw: int, ph: int, max_lines: int) -> None:
+        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (16, 36, 40, 220))
+        draw.text((x0 + pad, top + pad // 2), "YOU", font=label, fill=(120, 210, 170, 255))
+        you_label_w = _text_width(label, "YOU")
         draw.text(
-            (x0 + pad, y + you_h - pad // 2 - int(rw * 0.024)),
-            tok,
+            (x0 + pad + you_label_w + 14 * s, top + pad // 2 + 4 * s),
+            "signer",
             font=meta,
-            fill=(130, 150, 145, 255),
+            fill=(140, 170, 160, 255),
         )
-    y += you_h + gap
+        you_lines = _wrap_px(signer_text, body, pw - 2 * pad, max_lines=max_lines)
+        line_gap = int(short * 0.070)
+        ty = top + pad // 2 + int(short * 0.070)
+        for line in you_lines:
+            draw.text((x0 + pad, ty), line, font=body, fill=(245, 248, 246, 255))
+            ty += line_gap
+        if tokens:
+            tok = f"Signs: {tokens}"
+            while _text_width(meta, tok) > pw - 2 * pad and len(tok) > 8:
+                tok = tok[:-2]
+            draw.text(
+                (x0 + pad, top + ph - pad // 2 - int(short * 0.036)),
+                tok,
+                font=meta,
+                fill=(130, 150, 145, 255),
+            )
 
-    _rounded_rect(
-        draw,
-        (x0, y, x0 + content_w, y + reply_h),
-        radius,
-        (22, 42, 62, 235),
-    )
-    rail = max(4 * s, content_w // 90)
-    draw.rectangle(
-        [x0 + pad // 2, y + pad // 3, x0 + pad // 2 + rail, y + reply_h - pad // 3],
-        fill=(212, 160, 72, 230),
-    )
-    tx = x0 + pad // 2 + rail + 10 * s
-    draw.text((tx, y + pad // 3), "REPLY", font=label, fill=(180, 220, 255, 255))
-    reply_label_w = _text_width(label, "REPLY")
-    draw.text(
-        (tx + reply_label_w + 12 * s, y + pad // 3 + 3 * s),
-        "hearing person",
-        font=meta,
-        fill=(140, 175, 200, 255),
-    )
-    reply_lines = _wrap_px(
-        reply_text, reply_body, content_w - pad - rail - 16 * s, max_lines=3
-    )
-    reply_gap = int(rw * 0.048)
-    ry = y + pad // 3 + int(rw * 0.046)
-    for line in reply_lines:
-        draw.text((tx, ry), line, font=reply_body, fill=(255, 255, 255, 255))
-        ry += reply_gap
+    def _draw_reply(x0: int, top: int, pw: int, ph: int, max_lines: int) -> None:
+        _rounded_rect(draw, (x0, top, x0 + pw, top + ph), radius, (22, 42, 62, 235))
+        rail = max(5 * s, pw // 70)
+        draw.rectangle(
+            [x0 + pad // 2, top + pad // 2, x0 + pad // 2 + rail, top + ph - pad // 2],
+            fill=(212, 160, 72, 230),
+        )
+        tx = x0 + pad // 2 + rail + 12 * s
+        draw.text((tx, top + pad // 2), "REPLY", font=label, fill=(180, 220, 255, 255))
+        reply_label_w = _text_width(label, "REPLY")
+        draw.text(
+            (tx + reply_label_w + 14 * s, top + pad // 2 + 4 * s),
+            "hearing person",
+            font=meta,
+            fill=(140, 175, 200, 255),
+        )
+        reply_lines = _wrap_px(
+            reply_text, reply_body, pw - pad - rail - 20 * s, max_lines=max_lines
+        )
+        reply_gap = int(short * 0.075)
+        ry = top + pad // 2 + int(short * 0.075)
+        for line in reply_lines:
+            draw.text((tx, ry), line, font=reply_body, fill=(255, 255, 255, 255))
+            ry += reply_gap
+
+    if portrait:
+        # Stacked panels — fills iPhone FaceTime without side pillarbox mush.
+        you_h = int(panel_h * 0.42)
+        reply_h = panel_h - you_h - gap
+        _draw_you(safe_x, panel_top, content_w, you_h, max_lines=3)
+        _draw_reply(safe_x, panel_top + you_h + gap, content_w, reply_h, max_lines=4)
+    else:
+        # Side-by-side — fills Mac FaceTime landscape window.
+        panel_w = (content_w - gap) // 2
+        _draw_you(safe_x, panel_top, panel_w, panel_h, max_lines=4)
+        _draw_reply(safe_x + panel_w + gap, panel_top, panel_w, panel_h, max_lines=4)
 
     # Downsample 2× → publish size with high-quality filter (retina → HD).
     rgb_full = rgb.convert("RGB")
     if s != 1:
-        rgb_full = rgb_full.resize((BOARD_W, BOARD_H), Image.Resampling.LANCZOS)
-    return cv2.cvtColor(np.array(rgb_full), cv2.COLOR_RGB2BGR)
+        rgb_full = rgb_full.resize((width, height), Image.Resampling.LANCZOS)
+    bgr = cv2.cvtColor(np.array(rgb_full), cv2.COLOR_RGB2BGR)
+    return _sharpen_bgr(bgr)
 
 
 def _bgr_to_rgba_bytes(bgr: np.ndarray) -> bytes:
@@ -392,19 +432,87 @@ class CaptionBoard:
         self.signer_text = "Waiting for your signs..."
         self.reply_text = "Waiting for the other person to speak..."
         self.tokens = ""
-        self._source = rtc.VideoSource(BOARD_W, BOARD_H)
-        self._track = rtc.LocalVideoTrack.create_video_track("hermes-captions", self._source)
+        self.width, self.height = BOARD_LANDSCAPE
+        self._room: Optional[rtc.Room] = None
+        self._source: Optional[rtc.VideoSource] = None
+        self._track: Optional[rtc.LocalVideoTrack] = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._adapt_lock = asyncio.Lock()
+        self._build_source()
+
+    def _build_source(self) -> None:
+        # Screencast hint: keep resolution under congestion, no denoise mush.
+        self._source = rtc.VideoSource(self.width, self.height, is_screencast=True)
+        self._track = rtc.LocalVideoTrack.create_video_track(
+            "hermes-captions", self._source
+        )
+
+    def _publish_opts(self) -> rtc.TrackPublishOptions:
+        return rtc.TrackPublishOptions(
+            source=rtc.TrackSource.SOURCE_CAMERA,
+            # Single high-quality layer — avoid a low simulcast tier on FaceTime.
+            simulcast=False,
+            video_codec=rtc.VideoCodec.H264,
+            video_encoding=rtc.VideoEncoding(
+                max_bitrate=BOARD_MAX_BITRATE,
+                max_framerate=float(BOARD_FPS),
+            ),
+            degradation_preference=rtc.DegradationPreference.MAINTAIN_RESOLUTION,
+        )
 
     async def start(self, room: rtc.Room) -> None:
-        opts = rtc.TrackPublishOptions()
-        opts.source = rtc.TrackSource.SOURCE_CAMERA
-        await room.local_participant.publish_track(self._track, opts)
+        self._room = room
+        assert self._track is not None
+        await room.local_participant.publish_track(self._track, self._publish_opts())
         self._running = True
         self._push_frame()
         self._task = asyncio.create_task(self._loop())
-        logger.info("published hermes-captions video board (%dx%d @ %dfps)", BOARD_W, BOARD_H, BOARD_FPS)
+        logger.info(
+            "published hermes-captions video board (%dx%d @ %dfps, %dkbit, screencast)",
+            self.width,
+            self.height,
+            BOARD_FPS,
+            BOARD_MAX_BITRATE // 1000,
+        )
+
+    async def adapt_to_remote_frame(self, frame_w: int, frame_h: int) -> None:
+        """Match board aspect to the caller's FaceTime camera (Mac vs iPhone)."""
+        if frame_w <= 0 or frame_h <= 0 or self._room is None:
+            return
+        want_portrait = frame_h >= int(frame_w * 1.15)
+        target = BOARD_PORTRAIT if want_portrait else BOARD_LANDSCAPE
+        if target == (self.width, self.height):
+            return
+        async with self._adapt_lock:
+            if target == (self.width, self.height) or self._room is None:
+                return
+            room = self._room
+            old_track = self._track
+            old_source = self._source
+            old_sid = getattr(old_track, "sid", None) if old_track is not None else None
+            self.width, self.height = target
+            self._build_source()
+            assert self._track is not None
+            try:
+                if old_sid:
+                    await room.local_participant.unpublish_track(old_sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("unpublish old caption board failed: %s", exc)
+            try:
+                if old_source is not None:
+                    await old_source.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            await room.local_participant.publish_track(self._track, self._publish_opts())
+            self._push_frame()
+            logger.info(
+                "adapted hermes-captions board to %dx%d (remote %dx%d)",
+                self.width,
+                self.height,
+                frame_w,
+                frame_h,
+            )
 
     def update(
         self,
@@ -421,10 +529,18 @@ class CaptionBoard:
             self.tokens = tokens
 
     def _push_frame(self) -> None:
-        bgr = render_caption_board(self.signer_text, self.reply_text, self.tokens)
+        if self._source is None:
+            return
+        bgr = render_caption_board(
+            self.signer_text,
+            self.reply_text,
+            self.tokens,
+            width=self.width,
+            height=self.height,
+        )
         frame = rtc.VideoFrame(
-            BOARD_W,
-            BOARD_H,
+            self.width,
+            self.height,
             rtc.VideoBufferType.RGBA,
             _bgr_to_rgba_bytes(bgr),
         )
@@ -447,10 +563,19 @@ class CaptionBoard:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        try:
-            await self._source.aclose()
-        except Exception:  # noqa: BLE001
-            pass
+        if self._room is not None and self._track is not None:
+            sid = getattr(self._track, "sid", None)
+            if sid:
+                try:
+                    await self._room.local_participant.unpublish_track(sid)
+                except Exception:  # noqa: BLE001
+                    pass
+        if self._source is not None:
+            try:
+                await self._source.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            self._source = None
 
 
 class HermesCallWorker:
@@ -477,6 +602,7 @@ class HermesCallWorker:
         self._tasks: List[asyncio.Task] = []
         self._speak_q: asyncio.Queue[str] = asyncio.Queue()
         self._loop = asyncio.get_running_loop()
+        self._last_remote_wh: Optional[tuple[int, int]] = None
 
     def close(self) -> None:
         if self._video_stream is not None:
@@ -567,6 +693,12 @@ class HermesCallWorker:
                 bgr = _video_frame_to_bgr(event.frame)
                 if bgr is None:
                     continue
+                # Match caption board aspect to the caller's camera (Mac vs phone).
+                h, w = bgr.shape[:2]
+                wh = (w, h)
+                if wh != self._last_remote_wh:
+                    self._last_remote_wh = wh
+                    asyncio.create_task(self.board.adapt_to_remote_frame(w, h))
                 self._latest_bgr = bgr
                 if not self._busy:
                     asyncio.create_task(self._drain_frames())
