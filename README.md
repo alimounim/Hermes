@@ -67,7 +67,11 @@ python app.py --video demo.mp4    # backup demo from a recorded clip
 
 ## Vocabulary
 
-Configured in `config.py`: `_none`, HELLO, THANK-YOU, PLEASE, YES, NO, I, NEED, MEDICINE, PAIN, HEAD, HELP, WHERE, BATHROOM, PHARMACY.
+Configured in `config.py` (must stay aligned with `import_gislr.SIGN_MAP` targets):
+
+`_none`, HELLO, THANK-YOU, PLEASE, YES, NO, WHERE, HEAD, PAIN, SICK, BATHROOM, WATER, HUNGRY, THIRSTY, NEED, WAIT, FINISH, BYE, FINE, YOU, MY, HOME, HELP, TIME, NOW, I, MEDICINE, PHARMACY.
+
+GISLR covers everything except **I**, **MEDICINE**, and **PHARMACY** — record those yourself with `collect.py` (or leave them out of training until you do).
 
 ## Project layout
 

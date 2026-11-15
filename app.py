@@ -113,13 +113,15 @@ def run(video: Optional[str] = None, no_voice: bool = False) -> None:
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)
 
+    # Fail fast if the classifier is missing — before grabbing the camera.
+    recognizer = SignRecognizer()
+
     if video:
         source = VideoFileSource(video, loop=True)
     else:
         source = WebcamSource()
     source.open()
 
-    recognizer = SignRecognizer()
     conversation: List[Tuple[str, str]] = []
     signer_caption = ""
     reply_caption = ""

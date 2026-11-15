@@ -53,25 +53,29 @@ def _print_counts(title: str, counts: dict[str, int]) -> None:
 
 
 def balance_classes(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Oversample classes below the median count (repeat + Gaussian noise std 0.02)."""
+    """Oversample classes below the median count (repeat + Gaussian noise std 0.02).
+
+    Target is at least 2 so stratified train/test split never fails on rare signs.
+    """
     counts = _class_counts(y)
     _print_counts("Class counts before balancing:", counts)
     median = int(np.median(list(counts.values())))
-    print(f"Median class count: {median}")
+    target = max(median, 2)
+    print(f"Median class count: {median} (balance target: {target})")
 
     rng = np.random.default_rng(0)
     extras_x: list[np.ndarray] = []
     extras_y: list[str] = []
     for label, n in counts.items():
-        if n >= median:
+        if n >= target:
             continue
-        need = median - n
+        need = target - n
         idx = np.where(y == label)[0]
         picks = rng.choice(idx, size=need, replace=True)
         noise = rng.normal(0.0, 0.02, size=(need, X.shape[1])).astype(np.float32)
         extras_x.append(X[picks] + noise)
         extras_y.extend([label] * need)
-        print(f"  balancing '{label}': {n} → {median} (+{need})")
+        print(f"  balancing '{label}': {n} → {target} (+{need})")
 
     if extras_x:
         X = np.concatenate([X, *extras_x], axis=0)
