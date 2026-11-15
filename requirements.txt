@@ -1,6 +1,7 @@
 opencv-python>=4.8
 mediapipe>=0.10.14
 numpy>=1.26
+Pillow>=10.0
 # models/sign_clf.joblib is a scikit-learn pickle: it only loads on 1.9.x.
 scikit-learn>=1.9,<1.10
 joblib>=1.3

@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import sys
-import textwrap
 from pathlib import Path
 from typing import List, Optional
 
@@ -61,9 +60,17 @@ GREETING = (
     "on my video on FaceTime. Watch that caption board, not Apple's captions."
 )
 
-BOARD_W = 640
-BOARD_H = 360
+# Portrait 9:16 — FaceTime on iPhone cover-crops landscape 16:9 and clips
+# left-aligned labels. Keep all text inside SAFE_* insets for UI chrome.
+BOARD_W = 720
+BOARD_H = 1280
 BOARD_FPS = 8
+SAFE_X = 100      # ~14% side margin — survives iPhone cover + edge crop
+SAFE_TOP = 110    # status / Dynamic Island
+SAFE_BOTTOM = 160 # FaceTime call controls
+CONTENT_W = BOARD_W - 2 * SAFE_X
+
+_FONT_DIR = _ROOT / "assets" / "fonts"
 
 
 def _require_runtime() -> None:
@@ -128,9 +135,93 @@ def _pub_name(publication: rtc.RemoteTrackPublication) -> str:
     return (publication.name or publication.sid or "").strip()
 
 
-def _wrap(text: str, width: int = 42) -> List[str]:
+def _load_font(name: str, size: int):
+    """Load a vendored TTF; fall back to default bitmap font."""
+    from PIL import ImageFont
+
+    path = _FONT_DIR / name
+    try:
+        return ImageFont.truetype(str(path), size=size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _fill_atmosphere(rgb) -> None:
+    """Deep ink → teal wash with a warm amber glow (not purple/cream AI defaults)."""
+    from PIL import Image, ImageDraw
+
+    draw = ImageDraw.Draw(rgb, "RGBA")
+    for y in range(BOARD_H):
+        t = y / max(BOARD_H - 1, 1)
+        # top ink (12, 18, 28) → mid teal (18, 48, 58) → bottom charcoal (10, 14, 20)
+        if t < 0.45:
+            u = t / 0.45
+            r = int(12 + (18 - 12) * u)
+            g = int(18 + (48 - 18) * u)
+            b = int(28 + (58 - 28) * u)
+        else:
+            u = (t - 0.45) / 0.55
+            r = int(18 + (10 - 18) * u)
+            g = int(48 + (14 - 48) * u)
+            b = int(58 + (20 - 58) * u)
+        draw.line([(0, y), (BOARD_W, y)], fill=(r, g, b, 255))
+    # Soft amber glow behind brand (atmospheric, not a card)
+    glow = Image.new("RGBA", (BOARD_W, BOARD_H), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    cx, cy, rad = BOARD_W // 2, SAFE_TOP + 40, 220
+    for i in range(6, 0, -1):
+        a = 18 if i == 6 else max(6, 28 - i * 4)
+        gdraw.ellipse(
+            [cx - rad * i // 6, cy - rad * i // 8, cx + rad * i // 6, cy + rad * i // 8],
+            fill=(212, 160, 72, a),
+        )
+    rgb.alpha_composite(glow)
+
+
+def _rounded_rect(
+    draw,
+    xy: tuple[int, int, int, int],
+    radius: int,
+    fill: tuple[int, int, int, int],
+) -> None:
+    draw.rounded_rectangle(xy, radius=radius, fill=fill)
+
+
+def _text_width(font, text: str) -> int:
+    try:
+        return int(font.getlength(text))
+    except Exception:  # noqa: BLE001
+        bbox = font.getbbox(text)
+        return int(bbox[2] - bbox[0])
+
+
+def _wrap_px(text: str, font, max_width: int, max_lines: int) -> List[str]:
     text = (text or "").strip() or "—"
-    return textwrap.wrap(text, width=width) or ["—"]
+    words = text.split()
+    lines: List[str] = []
+    cur = ""
+    for word in words:
+        trial = word if not cur else f"{cur} {word}"
+        if _text_width(font, trial) <= max_width:
+            cur = trial
+            continue
+        if cur:
+            lines.append(cur)
+        cur = word
+        if len(lines) >= max_lines:
+            break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if not lines:
+        lines = ["—"]
+    # Ellipsize last line if we still overflow
+    if len(lines) == max_lines:
+        last = lines[-1]
+        while last and _text_width(font, last) > max_width:
+            last = last[:-1]
+        if last != lines[-1]:
+            lines[-1] = (last[:-1] + "…") if len(last) > 1 else "…"
+    return lines
 
 
 def render_caption_board(
@@ -138,60 +229,99 @@ def render_caption_board(
     reply_text: str,
     tokens: str = "",
 ) -> np.ndarray:
-    """BGR board shown on FaceTime as the agent's camera track."""
-    img = np.zeros((BOARD_H, BOARD_W, 3), dtype=np.uint8)
-    img[:] = (28, 24, 18)  # dark slate
-    # Header
-    cv2.rectangle(img, (0, 0), (BOARD_W, 56), (48, 40, 28), -1)
-    cv2.putText(
-        img, "HERMES", (16, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (90, 220, 255), 2
-    )
-    cv2.putText(
-        img,
-        "Interpreter mode  ·  sign → I speak  ·  reply captions below",
-        (170, 36),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (200, 200, 200),
-        1,
-    )
+    """BGR portrait board for FaceTime — safe margins, readable YOU/REPLY."""
+    from PIL import Image, ImageDraw
 
-    y = 90
-    cv2.putText(img, "YOU (signer)", (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 255, 180), 1)
+    rgb = Image.new("RGBA", (BOARD_W, BOARD_H), (12, 18, 28, 255))
+    _fill_atmosphere(rgb)
+    draw = ImageDraw.Draw(rgb)
+
+    brand = _load_font("NotoSerifDisplay-Bold.ttf", 72)
+    tagline = _load_font("NotoSansDisplay-Regular.ttf", 22)
+    label = _load_font("NotoSansDisplay-Bold.ttf", 26)
+    body = _load_font("NotoSansDisplay-Regular.ttf", 36)
+    reply_body = _load_font("NotoSansDisplay-Bold.ttf", 44)
+    meta = _load_font("NotoSansDisplay-Regular.ttf", 20)
+
+    x0 = SAFE_X
+    y = SAFE_TOP
+
+    # Brand — hero signal (must survive without nav chrome)
+    brand_text = "HERMES"
+    bw = _text_width(brand, brand_text)
+    draw.text(((BOARD_W - bw) // 2, y), brand_text, font=brand, fill=(245, 232, 210, 255))
+    y += 82
+    tip = "You sign · I speak · replies below"
+    tw = _text_width(tagline, tip)
+    draw.text(((BOARD_W - tw) // 2, y), tip, font=tagline, fill=(168, 196, 188, 255))
+    y += 48
+
+    # Accent rule
+    draw.rectangle(
+        [BOARD_W // 2 - 36, y, BOARD_W // 2 + 36, y + 3],
+        fill=(212, 160, 72, 220),
+    )
     y += 28
-    for line in _wrap(signer_text, 48)[:3]:
-        cv2.putText(img, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        y += 30
 
-    if tokens:
-        cv2.putText(
-            img,
-            f"Signs: {tokens}"[:70],
-            (16, y + 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (160, 160, 160),
-            1,
-        )
+    pad = 36
+    panel_w = CONTENT_W
 
-    # Reply panel (hearing person) — large, for Deaf viewer
-    panel_top = 210
-    cv2.rectangle(img, (0, panel_top), (BOARD_W, BOARD_H), (20, 50, 70), -1)
-    cv2.putText(
-        img,
-        "REPLY (hearing person)",
-        (16, panel_top + 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (180, 230, 255),
-        1,
+    # YOU panel (signer) — secondary
+    you_h = 260
+    _rounded_rect(
+        draw,
+        (x0, y, x0 + panel_w, y + you_h),
+        22,
+        (16, 36, 40, 210),
     )
-    y = panel_top + 62
-    for line in _wrap(reply_text, 40)[:3]:
-        cv2.putText(img, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
-        y += 34
+    draw.text((x0 + pad, y + 26), "YOU", font=label, fill=(120, 210, 170, 255))
+    draw.text(
+        (x0 + pad + 78, y + 30),
+        "signer",
+        font=meta,
+        fill=(140, 170, 160, 255),
+    )
+    you_lines = _wrap_px(signer_text, body, panel_w - 2 * pad, max_lines=3)
+    ty = y + 78
+    for line in you_lines:
+        draw.text((x0 + pad, ty), line, font=body, fill=(245, 248, 246, 255))
+        ty += 46
+    if tokens:
+        tok = f"Signs: {tokens}"
+        while _text_width(meta, tok) > panel_w - 2 * pad and len(tok) > 8:
+            tok = tok[:-2]
+        draw.text((x0 + pad, y + you_h - 42), tok, font=meta, fill=(130, 150, 145, 255))
+    y += you_h + 32
 
-    return img
+    # REPLY panel — primary for Deaf viewer (largest type)
+    reply_bottom = BOARD_H - SAFE_BOTTOM
+    reply_h = max(360, reply_bottom - y)
+    _rounded_rect(
+        draw,
+        (x0, y, x0 + panel_w, y + reply_h),
+        22,
+        (22, 42, 62, 230),
+    )
+    # Warm left rail for hierarchy (well inside safe margin)
+    draw.rectangle(
+        [x0 + 18, y + 28, x0 + 24, y + reply_h - 28],
+        fill=(212, 160, 72, 230),
+    )
+    draw.text((x0 + pad + 12, y + 28), "REPLY", font=label, fill=(180, 220, 255, 255))
+    draw.text(
+        (x0 + pad + 118, y + 32),
+        "hearing person",
+        font=meta,
+        fill=(140, 175, 200, 255),
+    )
+    reply_lines = _wrap_px(reply_text, reply_body, panel_w - 2 * pad - 16, max_lines=5)
+    ry = y + 84
+    for line in reply_lines:
+        draw.text((x0 + pad + 12, ry), line, font=reply_body, fill=(255, 255, 255, 255))
+        ry += 56
+
+    bgr = cv2.cvtColor(np.array(rgb.convert("RGB")), cv2.COLOR_RGB2BGR)
+    return bgr
 
 
 def _bgr_to_rgba_bytes(bgr: np.ndarray) -> bytes:
@@ -203,8 +333,8 @@ class CaptionBoard:
     """Publishes a camera track so FaceTime can show reply captions."""
 
     def __init__(self) -> None:
-        self.signer_text = "Waiting for your signs…"
-        self.reply_text = "Waiting for the other person to speak…"
+        self.signer_text = "Waiting for your signs..."
+        self.reply_text = "Waiting for the other person to speak..."
         self.tokens = ""
         self._source = rtc.VideoSource(BOARD_W, BOARD_H)
         self._track = rtc.LocalVideoTrack.create_video_track("hermes-captions", self._source)
@@ -440,7 +570,7 @@ class HermesCallWorker:
         logger.info("chert_bridge_ready — greeting caller")
         self.board.update(
             signer="Listening for your signs…",
-            reply="Waiting for the other person to speak…",
+            reply="Waiting for the other person to speak...",
         )
         await self._speak_q.put(GREETING)
 
