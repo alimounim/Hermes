@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign Dictionary · Hermes</title>
+<meta name="description" content="The 49 ASL signs Hermes understands, with a video for each and how reliably it recognizes them.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap">
+<style>
+/* Layout: a wayfinding-style reference — sticky search bar, category "zone" chips, dense card grid that stacks to one column on phones. */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --ink: #15212c;
+  --muted: #5b6875;
+  --line: #d9e0e6;
+  --accent: #0b6f73;
+  --accent-ink: #ffffff;
+  --warn: #9a5b00;
+  --warn-bg: #fff3df;
+  --off: #8a4b5c;
+  --off-bg: #f7e9ed;
+  --z-greet: #3b6fb6; --z-answer: #5a6b7d; --z-question: #7b4fb0; --z-health: #b4443c;
+  --z-needs: #0b7f6a; --z-feel: #c07a12; --z-action: #2f7d32; --z-time: #2b6c8f; --z-people: #8a5a3c;
+  --display: "Bricolage Grotesque", "Space Grotesk", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f161c; --surface: #172129; --ink: #e6edf2; --muted: #93a2ae; --line: #2a3843;
+    --accent: #3fb9b5; --accent-ink: #062023; --warn: #f0b45a; --warn-bg: #2d2412; --off: #e59ab0; --off-bg: #2e1b22;
+    --z-greet: #7aa6e8; --z-answer: #a3b1bf; --z-question: #b896e6; --z-health: #f08a80;
+    --z-needs: #4fd1b3; --z-feel: #f0b04a; --z-action: #7fcc7f; --z-time: #6cb8de; --z-people: #d4a07e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f161c; --surface: #172129; --ink: #e6edf2; --muted: #93a2ae; --line: #2a3843;
+  --accent: #3fb9b5; --accent-ink: #062023; --warn: #f0b45a; --warn-bg: #2d2412; --off: #e59ab0; --off-bg: #2e1b22;
+  --z-greet: #7aa6e8; --z-answer: #a3b1bf; --z-question: #b896e6; --z-health: #f08a80;
+  --z-needs: #4fd1b3; --z-feel: #f0b04a; --z-action: #7fcc7f; --z-time: #6cb8de; --z-people: #d4a07e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header { padding-block: 28px 8px; }
+h1 { font-family: var(--display); font-weight: 800; font-size: clamp(28px, 5vw, 40px); line-height: 1.05; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--muted); margin: 8px 0 0; max-width: 62ch; }
+
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 14px 12px; border-bottom: 1px solid var(--line); }
+.search { display: flex; gap: 8px; align-items: center; background: var(--surface); border: 2px solid var(--line); border-radius: 12px; padding: 0 12px; }
+.search:focus-within { border-color: var(--accent); }
+.search svg { flex: none; color: var(--muted); }
+#q { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 18px; padding: 12px 0; }
+#q::placeholder { color: var(--muted); }
+.kbd { flex: none; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+#clear { flex: none; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; padding: 6px; border-radius: 6px; }
+#clear:focus-visible, .chip:focus-visible, .watch:focus-visible, .alt:focus-visible, .ex:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c, var(--muted)); }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+
+main { padding-block: 18px 48px; display: grid; gap: 28px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 10px; padding: 14px 14px 12px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.card .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.word { font-family: var(--display); font-weight: 600; font-size: 22px; letter-spacing: 0.01em; margin: 0; overflow-wrap: anywhere; }
+.zone { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--c); font-weight: 700; white-space: nowrap; }
+.aka { font-size: 13px; color: var(--muted); margin: 0; }
+.note { font-size: 14px; margin: 0; }
+.pill { justify-self: start; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.pill.weak { color: var(--warn); background: var(--warn-bg); }
+.pill.off { color: var(--off); background: var(--off-bg); }
+.pill.good { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.pill.live { color: var(--z-greet); background: color-mix(in srgb, var(--z-greet) 14%, transparent); }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.rel { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.rel .row { display: flex; justify-content: space-between; gap: 8px; }
+.rel b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.meter { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: inherit; background: var(--m); }
+.opts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.opts select { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 18px; height: 6px; border-radius: 999px; background: var(--m); }
+.links { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 2px; }
+.watch { display: inline-flex; align-items: center; gap: 6px; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 700; font-size: 14px; padding: 7px 12px; border-radius: 8px; }
+.watch:hover { filter: brightness(1.08); }
+.alt { font-size: 13px; color: var(--accent); }
+mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.seq { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.back { margin: 0 0 10px; font-size: 14px; }
+.back a { color: var(--muted); text-decoration: none; }
+.back a:hover { color: var(--ink); }
+h2 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0 0 10px; }
+.empty { background: var(--surface); border: 1px dashed var(--line); border-radius: 10px; padding: 18px; color: var(--muted); }
+.examples { display: flex; flex-wrap: wrap; gap: 8px; }
+.ex { border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 14px; padding: 8px 12px; border-radius: 8px; cursor: pointer; text-align: left; }
+.ex small { display: block; color: var(--muted); font-size: 12px; }
+.tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
+.tip { border-top: 2px solid var(--ink); padding-top: 8px; font-size: 14px; }
+.tip b { display: block; font-family: var(--display); font-size: 15px; margin-bottom: 2px; }
+footer { color: var(--muted); font-size: 13px; padding-block: 0 32px; }
+@media (prefers-reduced-motion: no-preference) { .card { transition: border-color .15s; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="back"><a href="index.html">← Hermes · signtovoice.us</a></p>
+    <h1>Hermes Sign Dictionary</h1>
+    <p class="sub">The 49 signs the current Hermes app understands, with a video for each and how reliably the model picks it up. Search by word or meaning, or type a whole sentence like <em>where bathroom</em> to see its signs in order.</p>
+    <div class="legend" style="margin-top:12px">
+      <span><i style="--m:var(--accent)"></i>Reliable · 80%+</span>
+      <span><i style="--m:var(--warn)"></i>Usually works · 65–79%</span>
+      <span><i style="--m:var(--off)"></i>Hard · under 65%, expect retries</span>
+    </div>
+  </header>
+</div>
+
+<div class="bar">
+  <div class="wrap">
+    <label class="search" for="q">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Search: toilet, hurt, tired, where bathroom…" aria-label="Search signs">
+      <span class="kbd" aria-hidden="true">/</span>
+      <button id="clear" type="button" hidden>Clear</button>
+    </label>
+    <div class="chips" id="chips" role="group" aria-label="Filter by category"></div>
+    <div class="opts">
+      <label>Sort <select id="sort"><option value="cat">By category</option><option value="rel">Most reliable first</option><option value="az">A to Z</option></select></label>
+      <label><input type="checkbox" id="showOff"> Show signs it can't recognize yet</label>
+    </div>
+    <div class="meta"><span id="count"></span><span id="mode"></span></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <main>
+    <section aria-live="polite">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden></div>
+    </section>
+
+    <section>
+      <h2>Try a sentence</h2>
+      <div class="examples" id="examples"></div>
+    </section>
+
+    <section>
+      <h2>Getting recognized</h2>
+      <div class="tips">
+        <div class="tip"><b>One sign at a time</b>Raise your hands, make the sign once, then lower them. The top line says "Signing…" while your hands are up.</div>
+        <div class="tip"><b>Lower your hands to finish</b>Drop them below the dotted line on screen (about elbow height) or out of the picture. That is when the sign is judged.</div>
+        <div class="tip"><b>Keep your face and shoulders in view</b>The model uses where your hands are relative to your face, so sit back enough to show both.</div>
+        <div class="tip"><b>"Not sure" adds nothing</b>If it shows "Not sure", just sign again. A wrong word got in? Press U to undo it.</div>
+        <div class="tip"><b>Pause to send</b>3 seconds with no new sign sends the sentence. Press S to send it right away.</div>
+        <div class="tip"><b>What the percentage means</b>How often the model added the right word for 4 signers it never trained on. Your own signing may differ: record your versions with <code>record_signs.py</code> to raise it.</div>
+        <div class="tip"><b>Try other versions</b>Video pages often show several versions of a sign. If one is not picked up, try another.</div>
+      </div>
+    </section>
+  </main>
+  <footer>Videos open on Lifeprint (ASL University) in a new tab. Model: 49 signs from the Google Isolated Sign Language Recognition dataset. Reliability rechecked on the shipped model setup (Nov 15, 2026), 3,104 clips from held-out signers.</footer>
+</div>
+
+<script>
+const ZONES = {
+  greet:    { name: "Greetings", c: "--z-greet" },
+  answer:   { name: "Answers", c: "--z-answer" },
+  question: { name: "Questions", c: "--z-question" },
+  health:   { name: "Body & health", c: "--z-health" },
+  needs:    { name: "Needs", c: "--z-needs" },
+  feel:     { name: "Feelings", c: "--z-feel" },
+  action:   { name: "Actions", c: "--z-action" },
+  time:     { name: "Time", c: "--z-time" },
+  people:   { name: "People & places", c: "--z-people" },
+};
+const LP = s => `https://www.lifeprint.com/asl101/pages-signs/${s[0]}/${s}.htm`;
+const ACC = {"ANOTHER":[83,"CRY"], "BAD":[45,"BYE,THANK-YOU"], "BATH":[77,"HAVE"], "BATHROOM":[94,"BYE"], "BED":[82,"STAY"], "BETTER":[73,"HAPPY,THANK-YOU"], "BYE":[96,"FINISH"], "CRY":[63,"WHERE"], "DAD":[96,"FINE,BAD"], "DRINK":[89,"YESTERDAY,LISTEN"], "FIND":[72,"WHY"], "FINE":[83,"WATER"], "FINISH":[86,"MOM"], "FOOD":[82,"HOME"], "HAPPY":[62,"PLEASE,MY"], "HAVE":[79,"BATH,WHY"], "HEAD":[70,"BAD,WHY"], "HELLO":[83,"BED,PAIN"], "HOME":[88,"HEAD"], "HOT":[55,"SAD"], "HUNGRY":[81,"FINE,PLEASE"], "LATER":[69,"NEED,WHERE"], "LISTEN":[58,"LATER"], "MOM":[93,"WATER,BYE"], "MORNING":[94,"SICK"], "MY":[75,"PLEASE,LISTEN"], "NEED":[62,"BATHROOM,TIME"], "NIGHT":[61,"BYE,YESTERDAY"], "NO":[95,""], "NOT":[79,"ANOTHER,TOMORROW"], "NOW":[81,"SAD,HUNGRY"], "PAIN":[33,"NOT"], "PLEASE":[78,"MY,HAPPY"], "SAD":[91,"WHY,FINISH"], "SICK":[83,"WHY,BETTER"], "SLEEP":[49,"SLEEPY,WATER"], "SLEEPY":[68,"SLEEP,WATER"], "STAY":[80,"YESTERDAY"], "THANK-YOU":[63,"WAIT,HAPPY"], "THIRSTY":[86,"HUNGRY"], "TIME":[81,"HOME"], "TOMORROW":[57,"NOT,YESTERDAY"], "WAIT":[82,"SAD"], "WATER":[83,"FINE"], "WHERE":[91,"NEED,LISTEN"], "WHO":[72,"LATER"], "WHY":[70,"YESTERDAY"], "YES":[77,"NEED"], "YESTERDAY":[82,"STAY"]};
+// Signs that worked for you in your own live test.
+const LIVE = new Set(["HELLO","WATER","PLEASE"]);
+// [label, zone, video slug, aliases, note, flags]  flags: x = not in the current model
+const RAW = [
+  ["HELLO","greet","hello","hi, hey","",""],
+  ["THANK-YOU","greet","thankyou","thanks, thank you, grateful","",""],
+  ["PLEASE","greet","please","","",""],
+  ["BYE","greet","bye","goodbye, see you, farewell","",""],
+  ["FINE","greet","fine","ok, okay, good, alright","",""],
+  ["YES","answer","yes","yeah, sure, agree","",""],
+  ["NO","answer","no","nope","",""],
+  ["NOT","answer","not","don't, do not, isn't, never","Negates the sign next to it: NOT + HUNGRY = I'm not hungry.",""],
+  ["ANOTHER","answer","another","more, one more, other, again","",""],
+  ["WHERE","question","where","location, which way","",""],
+  ["WHO","question","who","whom, which person","",""],
+  ["WHY","question","why","reason, how come","",""],
+  ["HEAD","health","head","headache, skull","Sign HEAD then PAIN for a headache.",""],
+  ["PAIN","health","hurt","hurt, hurts, owie, ache, sore, injury","The model learned the dataset's \"owie\". Lifeprint's \"hurt\" is the closest standard sign.",""],
+  ["SICK","health","sick","ill, unwell, nausea, not well","",""],
+  ["BAD","health","bad","awful, terrible, worse","",""],
+  ["BETTER","health","better","improved, feeling better","",""],
+  ["HOT","health","hot","warm, heat, burning","",""],
+  ["CRY","feel","cry","crying, tears, upset","",""],
+  ["BATHROOM","needs","potty","toilet, restroom, washroom, potty, wc, loo","The model learned \"potty\". The bathroom page shows the same kind of sign.","", ["bathroom page","bathroom"]],
+  ["WATER","needs","water","","",""],
+  ["DRINK","needs","drink","beverage, sip","",""],
+  ["FOOD","needs","food","eat, meal, eating","",""],
+  ["HUNGRY","needs","hungry","starving","",""],
+  ["THIRSTY","needs","thirsty","dry, parched","",""],
+  ["NEED","needs","need","have to, must, require, should","The dataset's version is \"have to\", the same sign as \"must\".","", ["must","must"]],
+  ["SLEEP","needs","sleep","rest, nap, asleep","",""],
+  ["SLEEPY","needs","sleepy","tired, exhausted, drowsy","",""],
+  ["BED","needs","bed","lie down","",""],
+  ["BATH","needs","bath","wash, bathe, shower","",""],
+  ["HAVE","action","have","got, own","",""],
+  ["GIVE","action","give","hand me, pass","Left out of the model: it was right under half the time for new signers.","x"],
+  ["HAPPY","feel","happy","glad, good mood","",""],
+  ["SAD","feel","sad","unhappy, down","",""],
+  ["WAIT","action","wait","hold on, one moment","",""],
+  ["FINISH","action","finish","done, finished, complete, over","",""],
+  ["GO","action","go","leave, going","Left out of the model: it was right under half the time for new signers.","x"],
+  ["STAY","action","stay","remain, keep","",""],
+  ["LOOK","action","look","see, watch, check","Left out of the model: it was right under half the time for new signers.","x"],
+  ["LISTEN","action","listen","hear, attention","",""],
+  ["FIND","action","find","search, looking for","",""],
+  ["TIME","time","time","what time, clock, o'clock","",""],
+  ["NOW","time","now","today, right now, currently","",""],
+  ["LATER","time","later","after, soon, future","Two versions on the page. Try both.",""],
+  ["TOMORROW","time","tomorrow","next day","",""],
+  ["YESTERDAY","time","yesterday","last day","",""],
+  ["MORNING","time","morning","am, breakfast time","",""],
+  ["NIGHT","time","night","evening, tonight, pm","",""],
+  ["MY","people","my","mine, my own","",""],
+  ["MOM","people","mom","mother, mum, mama","",""],
+  ["DAD","people","dad","father, papa","",""],
+  ["PERSON","people","person","someone, man, woman, people","Left out of the model: it was right under half the time for new signers.","x"],
+  ["HOME","people","home","house","",""],
+  ["I","people","i","me, myself","Not in the dataset. Record it with record_signs.py, then retrain.","x"],
+  ["YOU","people","you","your","Not in the dataset. Record it with record_signs.py, then retrain.","x"],
+  ["HELP","health","help","assist, assistance","Not in the dataset. Record it with record_signs.py, then retrain.","x"],
+  ["MEDICINE","health","medicine","pill, pills, medication, drug, tablet","Not in the dataset. Record it with record_signs.py, then retrain.","x"],
+  ["PHARMACY","people","pharmacy","drugstore, chemist","Not in the dataset. Record it with record_signs.py, then retrain.","x"],
+];
+const SIGNS = RAW.map(([label, zone, slug, aka, note, flags, alt]) => ({
+  label, zone, url: LP(slug), aka: aka ? aka.split(",").map(s => s.trim()) : [],
+  note, off: flags.includes("x"), acc: ACC[label] ? ACC[label][0] : null,
+  confused: ACC[label] && ACC[label][1] ? ACC[label][1].split(",") : [],
+  alt: alt ? { text: alt[0], url: LP(alt[1]) } : null,
+}));
+const EXAMPLES = [
+  ["HELLO","BATHROOM","WHERE"], ["THIRSTY","WATER","PLEASE"], ["NO","HUNGRY"], ["MOM","HOME"],
+  ["YESTERDAY","SICK"], ["DRINK","WATER"], ["FINISH","BYE"], ["WAIT","PLEASE"], ["MORNING","FOOD"],
+  ["SICK","BED"], ["DAD","WHERE"],
+];
+
+const norm = s => s.toLowerCase().replace(/[-_]/g, " ").replace(/[^a-z0-9' ]/g, "").replace(/\s+/g, " ").trim();
+const byLabel = new Map(SIGNS.map(s => [norm(s.label), s]));
+let zoneFilter = null;
+
+function score(sign, term) {
+  const l = norm(sign.label);
+  if (l === term) return 100;
+  if (sign.aka.some(a => norm(a) === term)) return 90;
+  if (l.startsWith(term)) return 70;
+  if (sign.aka.some(a => norm(a).startsWith(term))) return 60;
+  if (l.includes(term)) return 40;
+  if (sign.aka.some(a => norm(a).includes(term))) return 30;
+  if (term.length > 3 && norm(sign.note).includes(term)) return 10;
+  return 0;
+}
+// Multi-word query: match phrases first ("have to", "thank you"), then single words, keep order.
+function sentence(q) {
+  const words = q.split(" "); const out = []; let i = 0;
+  while (i < words.length) {
+    let hit = null, used = 1;
+    for (let n = Math.min(3, words.length - i); n >= 1 && !hit; n--) {
+      const phrase = words.slice(i, i + n).join(" ");
+      const best = SIGNS.map(s => [s, score(s, phrase)]).filter(([, v]) => v >= 60).sort((a, b) => b[1] - a[1])[0];
+      if (best) { hit = best[0]; used = n; }
+    }
+    out.push(hit ? { sign: hit } : { miss: words[i] });
+    i += used;
+  }
+  return out;
+}
+
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function hl(text, term) {
+  if (!term) return esc(text);
+  const i = norm(text).indexOf(term);
+  if (i < 0 || norm(text).length !== text.toLowerCase().replace(/[-_]/g, " ").length) return esc(text);
+  return esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + term.length)) + "</mark>" + esc(text.slice(i + term.length));
+}
+function tier(s) {
+  if (s.acc >= 80) return { name: "Reliable", c: "--accent" };
+  if (s.acc >= 65) return { name: "Usually works", c: "--warn" };
+  return { name: "Hard, expect retries", c: "--off" };
+}
+const ORDER = new Map(SIGNS.map((s, i) => [s.label, i]));
+function card(s, term, pos) {
+  const z = ZONES[s.zone];
+  const t = tier(s);
+  const pills = [
+    s.off ? '<span class="pill off">Not in the current model</span>' : "",
+    LIVE.has(s.label) ? '<span class="pill live">Worked in your live test</span>' : "",
+  ].join("");
+  const rel = s.off ? "" : `<div class="rel"><div class="row"><span>${t.name}</span><b>${s.acc}%</b></div>
+    <div class="meter" role="img" aria-label="${s.acc}% recognized correctly"><i style="width:${s.acc}%;--m:var(${t.c})"></i></div>
+    ${s.confused.length ? `<span>Sometimes mistaken for ${s.confused.join(", ")}</span>` : ""}</div>`;
+  return `<article class="card" style="--c: var(${z.c})">
+    <div class="top"><h3 class="word">${hl(s.label, term)}</h3><span class="zone">${pos ? `<span class="seq">${pos} · </span>` : ""}${z.name}</span></div>
+    ${s.aka.length ? `<p class="aka">Also: ${s.aka.map(a => hl(a, term)).join(", ")}</p>` : ""}
+    ${s.note ? `<p class="note">${esc(s.note)}</p>` : ""}
+    ${rel}
+    ${pills ? `<div class="pills">${pills}</div>` : ""}
+    <div class="links"><a class="watch" href="${s.url}" target="_blank" rel="noopener">Watch video <span aria-hidden="true">↗</span></a>
+    ${s.alt ? `<a class="alt" href="${s.alt.url}" target="_blank" rel="noopener">Also: ${esc(s.alt.text)} ↗</a>` : ""}</div>
+  </article>`;
+}
+
+function sorter(a, b) {
+  const k = $("sort").value;
+  if (k === "rel") return (b.acc ?? -1) - (a.acc ?? -1);
+  if (k === "az") return a.label.localeCompare(b.label);
+  return ORDER.get(a.label) - ORDER.get(b.label);
+}
+function render() {
+  const q = norm($("q").value);
+  $("clear").hidden = !q;
+  const grid = $("grid"), empty = $("empty");
+  let html = "", shown = 0, mode = "";
+  if (q && q.includes(" ")) {
+    const parts = sentence(q);
+    const hits = parts.filter(p => p.sign);
+    if (hits.length >= 2 || (hits.length === 1 && parts.length > 1)) {
+      mode = "Sentence: " + parts.map(p => p.sign ? p.sign.label : `(${p.miss}?)`).join(" → ");
+      html = hits.map((p, i) => card(p.sign, "", i + 1)).join("");
+      shown = hits.length;
+      const misses = parts.filter(p => p.miss).map(p => p.miss);
+      if (misses.length) mode += ` · no sign for: ${misses.join(", ")}`;
+    }
+  }
+  if (!html) {
+    const list = SIGNS.map(s => [s, q ? score(s, q) : 1])
+      .filter(([s, v]) => v > 0 && (!zoneFilter || s.zone === zoneFilter) && (!s.off || $("showOff").checked || (q && v >= 90)))
+      .sort((a, b) => (q ? b[1] - a[1] : 0) || (a[0].off - b[0].off) || sorter(a[0], b[0]))
+      .map(([s]) => s);
+    shown = list.length;
+    html = list.map(s => card(s, q, 0)).join("");
+    mode = zoneFilter ? ZONES[zoneFilter].name : "";
+  }
+  grid.innerHTML = html;
+  empty.hidden = shown > 0;
+  if (!shown) empty.innerHTML = `No sign matches <b>${esc($("q").value)}</b>. Try a simpler word (for example <em>toilet</em> instead of <em>restroom please</em>), or clear the filter.`;
+  const inModel = SIGNS.filter(s => !s.off);
+  const n80 = inModel.filter(s => s.acc >= 80).length;
+  $("count").textContent = q || zoneFilter ? `${shown} ${shown === 1 ? "sign" : "signs"}` : `${inModel.length} signs the app understands · ${n80} reliable`;
+  $("mode").textContent = mode;
+}
+
+// Chips
+const chips = $("chips");
+const all = Object.assign(document.createElement("button"), { type: "button", className: "chip", textContent: "All" });
+all.setAttribute("aria-pressed", "true"); all.dataset.zone = "";
+chips.append(all);
+for (const [k, z] of Object.entries(ZONES)) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip"; b.dataset.zone = k; b.style.setProperty("--c", `var(${z.c})`);
+  b.innerHTML = `<span class="dot"></span>${z.name}`; b.setAttribute("aria-pressed", "false");
+  chips.append(b);
+}
+chips.addEventListener("click", e => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  zoneFilter = b.dataset.zone || null;
+  for (const c of chips.children) c.setAttribute("aria-pressed", String(c === b));
+  try { localStorage.setItem("hermes-zone", zoneFilter || ""); } catch (_) {}
+  render();
+});
+
+// Examples
+$("examples").innerHTML = EXAMPLES.map(ex => `<button type="button" class="ex" data-q="${ex.join(" ").toLowerCase()}">${ex.join(" → ")}<small>Show these signs</small></button>`).join("");
+$("examples").addEventListener("click", e => {
+  const b = e.target.closest(".ex"); if (!b) return;
+  zoneFilter = null; for (const c of chips.children) c.setAttribute("aria-pressed", String(c === all));
+  $("q").value = b.dataset.q; render(); window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+});
+
+$("q").addEventListener("input", render);
+$("sort").addEventListener("change", () => { try { localStorage.setItem("hermes-sort", $("sort").value); } catch (_) {} render(); });
+$("showOff").addEventListener("change", render);
+try { const v = localStorage.getItem("hermes-sort"); if (v) $("sort").value = v; } catch (_) {}
+$("clear").addEventListener("click", () => { $("q").value = ""; render(); $("q").focus(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement !== $("q")) { e.preventDefault(); $("q").focus(); }
+  if (e.key === "Escape" && document.activeElement === $("q")) { $("q").value = ""; render(); }
+});
+$("q").addEventListener("keydown", e => {
+  if (e.key === "Enter") { const a = $("grid").querySelector(".watch"); if (a) a.focus(); }
+});
+
+try { const z = localStorage.getItem("hermes-zone"); if (z && ZONES[z]) { zoneFilter = z; for (const c of chips.children) c.setAttribute("aria-pressed", String(c.dataset.zone === z)); } } catch (_) {}
+function fromHash() {
+  const h = decodeURIComponent(location.hash.slice(1)).replace(/-/g, " ");
+  if (h && byLabel.has(norm(h))) { $("q").value = norm(h); zoneFilter = null; for (const c of chips.children) c.setAttribute("aria-pressed", String(c === all)); }
+}
+fromHash();
+window.addEventListener("hashchange", () => { fromHash(); render(); });
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes · Sign to Voice</title>
+<meta name="description" content="Hermes turns American Sign Language into spoken English on a FaceTime call, and shows the spoken reply as captions. Built at HackUTA 2026.">
+<meta property="og:title" content="Hermes · Sign to Voice">
+<meta property="og:description" content="Sign on FaceTime. Hermes says it out loud and captions the reply.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b6f73'/%3E%3Cpath d='M20 46V18h6v11h12V18h6v28h-6V35H26v11z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap">
+<style>
+:root {
+  --bg: #f4f2ec;
+  --surface: #ffffff;
+  --ink: #142028;
+  --muted: #56626c;
+  --line: #dcd8cd;
+  --accent: #0b6f73;
+  --accent-ink: #ffffff;
+  --gold: #b07a1e;
+  --board: #0f1c22;
+  --board-you: #132a2e;
+  --board-reply: #182f48;
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1519; --surface: #162127; --ink: #e8eef1; --muted: #9aa8b2; --line: #26343c;
+    --accent: #3fb9b5; --accent-ink: #062023; --gold: #e2b25c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1519; --surface: #162127; --ink: #e8eef1; --muted: #9aa8b2; --line: #26343c;
+  --accent: #3fb9b5; --accent-ink: #062023; --gold: #e2b25c;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 17px; line-height: 1.55; }
+a { color: var(--accent); }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+
+/* Nav */
+nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 800; font-size: 22px; color: var(--ink); text-decoration: none; letter-spacing: 0.02em; }
+.brand-mark { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: 17px; }
+.navlinks { display: flex; gap: 20px; font-size: 15px; }
+.navlinks a { color: var(--muted); text-decoration: none; }
+.navlinks a:hover { color: var(--ink); }
+@media (max-width: 640px) { .navlinks a.opt { display: none; } }
+
+/* Hero */
+.hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; padding: 40px 0 72px; }
+@media (max-width: 880px) { .hero { grid-template-columns: 1fr; gap: 36px; padding-top: 16px; } }
+.eyebrow { font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); font-weight: 700; margin: 0 0 12px; }
+h1 { font-family: var(--display); font-weight: 800; font-size: clamp(40px, 6.4vw, 68px); line-height: 1.0; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: 19px; color: var(--muted); max-width: 46ch; margin: 18px 0 28px; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn { display: inline-flex; align-items: center; gap: 10px; border-radius: 12px; padding: 14px 20px; font-weight: 700; font-size: 17px; text-decoration: none; border: 2px solid transparent; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost { border-color: var(--line); color: var(--ink); background: var(--surface); }
+.btn.ghost:hover { border-color: var(--ink); }
+.number { margin-top: 16px; font-size: 15px; color: var(--muted); }
+.number b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.number button { font: inherit; font-size: 14px; color: var(--accent); background: none; border: 0; padding: 2px 4px; cursor: pointer; text-decoration: underline; }
+
+/* Caption board mock */
+.board { background: var(--board); border-radius: 20px; padding: 22px; color: #fff; box-shadow: 0 30px 60px -30px rgba(10, 30, 40, 0.55); aspect-ratio: 16 / 10; display: grid; grid-template-rows: auto 1fr; gap: 14px; min-width: 0; }
+@media (max-width: 520px) { .board { aspect-ratio: auto; padding: 18px 14px; } .panel { min-height: 150px; } }
+.board-head { text-align: center; }
+.board-title { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: clamp(26px, 3.6vw, 38px); letter-spacing: 0.04em; color: #fff7e6; line-height: 1; }
+.board-tag { font-size: 13px; color: #c8e6dc; margin-top: 4px; }
+.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-height: 0; }
+.panel { border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.panel.you { background: var(--board-you); }
+.panel.reply { background: var(--board-reply); border-left: 5px solid #d4a048; }
+.plabel { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+.panel.you .plabel { color: #7ce6b4; }
+.panel.reply .plabel { color: #bfe6ff; }
+.plabel span { font-weight: 400; color: #a9c4c0; margin-left: 4px; }
+.ptext { font-weight: 700; font-size: clamp(15px, 2vw, 21px); line-height: 1.2; overflow-wrap: anywhere; }
+.ptok { margin-top: auto; font-size: 12px; color: #9fbab3; letter-spacing: 0.03em; }
+.typing::after { content: "▍"; color: #7ce6b4; margin-left: 2px; }
+@media (prefers-reduced-motion: no-preference) { .typing::after { animation: blink 1s steps(2) infinite; } }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Sections */
+section { padding: 64px 0; border-top: 1px solid var(--line); }
+h2 { font-family: var(--display); font-weight: 800; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; margin: 0 0 12px; letter-spacing: -0.01em; text-wrap: balance; }
+.intro { color: var(--muted); max-width: 60ch; margin: 0 0 32px; }
+
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; counter-reset: step; list-style: none; padding: 0; margin: 0; }
+@media (max-width: 880px) { .steps { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 520px) { .steps { grid-template-columns: 1fr; } }
+.steps li { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; counter-increment: step; }
+.steps li::before { content: counter(step); display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+.steps h3 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0 0 6px; }
+.steps p { margin: 0; font-size: 15px; color: var(--muted); }
+.steps small { display: block; margin-top: 10px; font-size: 12px; color: var(--gold); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+.try { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.phrase { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.gloss { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+.sign { font-family: var(--display); font-weight: 600; font-size: 15px; padding: 3px 9px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); text-decoration: none; }
+.sign:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.arrow { color: var(--muted); font-size: 13px; }
+.said { margin: 0; font-size: 17px; }
+.said::before { content: "Hermes says: "; color: var(--muted); font-size: 14px; }
+
+.tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 20px 28px; }
+.tip { border-top: 3px solid var(--ink); padding-top: 10px; }
+.tip b { display: block; font-family: var(--display); font-size: 18px; margin-bottom: 4px; }
+.tip p { margin: 0; color: var(--muted); font-size: 15px; }
+
+.honest { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+@media (max-width: 760px) { .honest { grid-template-columns: 1fr; } }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+.stat b { display: block; font-family: var(--display); font-weight: 800; font-size: 32px; line-height: 1; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 13px; color: var(--muted); }
+.honest ul { margin: 0; padding-left: 20px; color: var(--muted); }
+.honest li { margin-bottom: 8px; }
+.honest li b { color: var(--ink); }
+
+.stack { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.stack span { border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 14px; background: var(--surface); }
+
+footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav aria-label="Main">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">H</span>Hermes</a>
+    <div class="navlinks">
+      <a class="opt" href="#how">How it works</a>
+      <a class="opt" href="#try">Try it</a>
+      <a href="dictionary.html">Sign dictionary</a>
+      <a href="https://github.com/alimounim/Hermes">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero" id="top">
+    <div>
+      <p class="eyebrow">Sign to voice · FaceTime</p>
+      <h1>You sign.<br><em>Hermes speaks.</em></h1>
+      <p class="lede">Call Hermes on FaceTime and sign in American Sign Language. It says your words out loud in natural English, and shows what the other person says back as large captions.</p>
+      <div class="cta">
+        <a class="btn primary" id="call" href="facetime://+17025109706">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2" y="6" width="13" height="12" rx="3" fill="currentColor"/><path d="M16 10.5l5-3v9l-5-3z" fill="currentColor"/></svg>
+          FaceTime Hermes
+        </a>
+        <a class="btn ghost" href="dictionary.html">See the 49 signs</a>
+      </div>
+      <p class="number">Line: <b id="num">+1 (702) 510-9706</b> <button type="button" id="copy">Copy</button><br>
+        <span id="device-note">Use a FaceTime <b>Video</b> call from an iPhone, iPad or Mac.</span></p>
+    </div>
+
+    <figure class="board" aria-label="Example of the Hermes caption board during a call" style="margin:0">
+      <div class="board-head">
+        <div class="board-title">HERMES</div>
+        <div class="board-tag">You sign · I speak · REPLY listens</div>
+      </div>
+      <div class="panels">
+        <div class="panel you">
+          <div class="plabel">YOU <span>signer</span></div>
+          <div class="ptext" id="you-text">Where is the bathroom?</div>
+          <div class="ptok" id="you-tok">Signs: BATHROOM WHERE</div>
+        </div>
+        <div class="panel reply">
+          <div class="plabel">REPLY <span>hearing person</span></div>
+          <div class="ptext" id="reply-text">Straight ahead, first door on your right.</div>
+        </div>
+      </div>
+    </figure>
+  </header>
+</div>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="intro">No app to install. Hermes joins your FaceTime call as the other participant and does the interpreting in between.</p>
+    <ol class="steps">
+      <li><h3>You sign</h3><p>One sign at a time: raise your hands, sign, lower them. Hermes watches your hands, face and shoulders.</p><small>MediaPipe</small></li>
+      <li><h3>It recognizes</h3><p>Each whole sign is matched by hand shape, where it is relative to your face, and how it moves.</p><small>Trained on Google's ASL dataset</small></li>
+      <li><h3>It speaks</h3><p>Pause for three seconds and your signs become one natural English sentence, said out loud.</p><small>Gemini + ElevenLabs</small></li>
+      <li><h3>You read the reply</h3><p>When the other person talks, their words appear under REPLY on Hermes' video.</p><small>ElevenLabs speech-to-text</small></li>
+    </ol>
+  </div>
+</section>
+
+<section id="try">
+  <div class="wrap">
+    <h2>Try these first</h2>
+    <p class="intro">These signs are the most reliable. Tap a sign to see how it's made.</p>
+    <div class="try">
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#hello">HELLO</a></div><p class="said">Hello.</p></div>
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#bathroom">BATHROOM</a><span class="arrow">→</span><a class="sign" href="dictionary.html#where">WHERE</a></div><p class="said">Where is the bathroom?</p></div>
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#thirsty">THIRSTY</a><span class="arrow">→</span><a class="sign" href="dictionary.html#water">WATER</a><span class="arrow">→</span><a class="sign" href="dictionary.html#please">PLEASE</a></div><p class="said">I'm thirsty, can I have some water, please?</p></div>
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#no">NO</a><span class="arrow">→</span><a class="sign" href="dictionary.html#hungry">HUNGRY</a></div><p class="said">No, I'm not hungry.</p></div>
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#mom">MOM</a><span class="arrow">→</span><a class="sign" href="dictionary.html#home">HOME</a></div><p class="said">My mom is at home.</p></div>
+      <div class="phrase"><div class="gloss"><a class="sign" href="dictionary.html#finish">FINISH</a><span class="arrow">→</span><a class="sign" href="dictionary.html#bye">BYE</a></div><p class="said">I'm done, goodbye.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="tips">
+  <div class="wrap">
+    <h2>Getting recognized</h2>
+    <p class="intro">Hermes judges a sign when your hands come down, so give each one a clear start and end.</p>
+    <div class="tips">
+      <div class="tip"><b>Show your face and shoulders</b><p>Sit back so the camera sees from the top of your head to your chest. Hermes measures where your hands are relative to your face.</p></div>
+      <div class="tip"><b>One sign, then hands down</b><p>Raise your hands, make the sign once, then lower them to your lap or out of view.</p></div>
+      <div class="tip"><b>Pause to send</b><p>Three seconds with no new sign finishes the sentence and Hermes says it.</p></div>
+      <div class="tip"><b>Not picked up? Sign again</b><p>If Hermes isn't sure, it adds nothing rather than guessing. Just repeat the sign.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="honest">
+  <div class="wrap honest">
+    <div>
+      <h2>What to expect</h2>
+      <p class="intro" style="margin-bottom:20px">Hermes is a hackathon demo, not a certified interpreter. Here is how it does today.</p>
+      <div class="stats">
+        <div class="stat"><b>49</b><span>everyday signs</span></div>
+        <div class="stat"><b>84%</b><span>right first try, for signers it never saw</span></div>
+        <div class="stat"><b>3 s</b><span>pause, and Hermes says your sentence</span></div>
+      </div>
+    </div>
+    <ul>
+      <li><b>Small vocabulary.</b> Greetings, needs, feelings, time and family words, chosen for a front desk, pharmacy or clinic. Words outside it are not recognized.</li>
+      <li><b>One sign at a time.</b> Hermes recognizes separate signs, not continuous signing or fingerspelling.</li>
+      <li><b>One call at a time.</b> The line is shared during the hackathon. If it's busy, try again in a few minutes.</li>
+      <li><b>Apple devices only.</b> FaceTime Video works from iPhone, iPad and Mac.</li>
+      <li><b>Not for emergencies</b> or medical decisions. Use a qualified interpreter for those.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="about">
+  <div class="wrap">
+    <h2>Why "Hermes"?</h2>
+    <p class="intro">In the Odyssey, Hermes is the messenger who carries words between gods and mortals. This Hermes carries them between signers and speakers. Built in 36 hours at HackUTA 2026.</p>
+    <div class="stack" aria-label="Built with">
+      <span>Chert FaceTime API</span><span>LiveKit</span><span>MediaPipe</span><span>scikit-learn</span><span>Google Gemini</span><span>ElevenLabs</span><span>Python</span>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer>
+    <span>Hermes · signtovoice.us · HackUTA 2026</span>
+    <span><a href="dictionary.html">Sign dictionary</a> · <a href="https://github.com/alimounim/Hermes">Source on GitHub</a></span>
+  </footer>
+</div>
+
+<script>
+// FaceTime links only work on Apple devices; elsewhere, point people to the number.
+(function () {
+  var ua = navigator.userAgent || "";
+  var apple = /iPhone|iPad|iPod|Macintosh/.test(ua);
+  if (!apple) {
+    document.getElementById("device-note").innerHTML =
+      "FaceTime only works on Apple devices. Call this number with FaceTime <b>Video</b> from an iPhone, iPad or Mac.";
+  }
+  var copy = document.getElementById("copy");
+  copy.addEventListener("click", function () {
+    var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1600); };
+    try { navigator.clipboard.writeText("+17025109706").then(done, function () {}); } catch (e) {}
+  });
+
+  // Cycle a few example exchanges on the caption board.
+  var demos = [
+    ["Where is the bathroom?", "BATHROOM WHERE", "Straight ahead, first door on your right."],
+    ["I'm thirsty, can I have some water, please?", "THIRSTY WATER PLEASE", "Sure, I'll bring you a glass of water."],
+    ["Hello, I feel sick.", "HELLO SICK", "I'm sorry. Let me get the nurse."],
+    ["Thank you, goodbye.", "THANK-YOU BYE", "You're welcome. Take care!"]
+  ];
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  var you = document.getElementById("you-text"), tok = document.getElementById("you-tok"), rep = document.getElementById("reply-text");
+  var i = 0;
+  setInterval(function () {
+    i = (i + 1) % demos.length;
+    you.textContent = demos[i][0];
+    tok.textContent = "Signs: " + demos[i][1];
+    rep.textContent = demos[i][2];
+  }, 4200);
+})();
+</script>
+</body>
+</html>
