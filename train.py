@@ -41,6 +41,46 @@ def load_dataset() -> tuple[np.ndarray, np.ndarray]:
     return np.stack(xs, axis=0), np.array(ys)
 
 
+def _class_counts(y: np.ndarray) -> dict[str, int]:
+    labels, counts = np.unique(y, return_counts=True)
+    return {str(label): int(count) for label, count in zip(labels, counts)}
+
+
+def _print_counts(title: str, counts: dict[str, int]) -> None:
+    print(title)
+    for label, n in sorted(counts.items()):
+        print(f"  {label:<12} {n}")
+
+
+def balance_classes(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Oversample classes below the median count (repeat + Gaussian noise std 0.02)."""
+    counts = _class_counts(y)
+    _print_counts("Class counts before balancing:", counts)
+    median = int(np.median(list(counts.values())))
+    print(f"Median class count: {median}")
+
+    rng = np.random.default_rng(0)
+    extras_x: list[np.ndarray] = []
+    extras_y: list[str] = []
+    for label, n in counts.items():
+        if n >= median:
+            continue
+        need = median - n
+        idx = np.where(y == label)[0]
+        picks = rng.choice(idx, size=need, replace=True)
+        noise = rng.normal(0.0, 0.02, size=(need, X.shape[1])).astype(np.float32)
+        extras_x.append(X[picks] + noise)
+        extras_y.extend([label] * need)
+        print(f"  balancing '{label}': {n} → {median} (+{need})")
+
+    if extras_x:
+        X = np.concatenate([X, *extras_x], axis=0)
+        y = np.concatenate([y, np.array(extras_y)], axis=0)
+
+    _print_counts("Class counts after balancing:", _class_counts(y))
+    return X, y
+
+
 def augment(X: np.ndarray, y: np.ndarray, copies: int = 2) -> tuple[np.ndarray, np.ndarray]:
     """Light Gaussian noise augmentation."""
     extras_x = []
@@ -56,6 +96,7 @@ def augment(X: np.ndarray, y: np.ndarray, copies: int = 2) -> tuple[np.ndarray, 
 def main() -> None:
     X, y = load_dataset()
     print(f"Loaded {len(X)} samples across {len(set(y))} labels")
+    X, y = balance_classes(X, y)
     X, y = augment(X, y, copies=2)
     print(f"After augmentation: {len(X)} samples")
 

@@ -3,6 +3,7 @@
 
 # Runtime / generated
 data/
+data/gislr_cache/
 models/
 
 # Python

@@ -21,6 +21,8 @@ HAND_LANDMARKER_URL = (
 )
 
 # Vocabulary — edit freely. `_none` is rest / no sign.
+# GISLR imports: PAIN←owie, BATHROOM←potty, NEED←haveto. I/MEDICINE/PHARMACY
+# are kept for Ali's own recordings (not in the Kaggle set).
 VOCABULARY = [
     "_none",
     "HELLO",
@@ -28,14 +30,27 @@ VOCABULARY = [
     "PLEASE",
     "YES",
     "NO",
-    "I",
-    "NEED",
-    "MEDICINE",
-    "PAIN",
-    "HEAD",
-    "HELP",
     "WHERE",
+    "HEAD",
+    "PAIN",
+    "SICK",
     "BATHROOM",
+    "WATER",
+    "HUNGRY",
+    "THIRSTY",
+    "NEED",
+    "WAIT",
+    "FINISH",
+    "BYE",
+    "FINE",
+    "YOU",
+    "MY",
+    "HOME",
+    "HELP",
+    "TIME",
+    "NOW",
+    "I",
+    "MEDICINE",
     "PHARMACY",
 ]
 
